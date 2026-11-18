@@ -45,9 +45,9 @@ Nenhuma fase começa antes do gate da anterior ser cumprido.
 - Configuração de lint, formatação e testes (`cargo test`, `vitest`).
 - Capabilities do Tauri mínimas (negar tudo, liberar só o necessário).
 
-### Fase 2 — Interface e topologia
+### Fase 2 — Interface e topologia (concluída em 2026-11-18)
 - Canvas, dispositivos, portas, conexões, propriedades, salvamento JSON.
-- Decisão final sobre React Flow ou canvas próprio (ADR-003 reavaliada com um protótipo de 200 nós).
+- Decisão final sobre React Flow: **mantido** (ADR-003). Medição com 200 nós e 300 links: pan, zoom e arraste a 60 FPS.
 
 ### Fase 3 — Motor de simulação
 - Fila de eventos, relógio virtual, interfaces, Ethernet, ARP, IPv4, ICMP.

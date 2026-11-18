@@ -1,4 +1,7 @@
+mod project_io;
+
 use serde::Serialize;
+use std::path::PathBuf;
 
 /// Status do motor, enviado ao frontend pelo comando `engine_status`.
 #[derive(Serialize)]
@@ -15,10 +18,29 @@ fn engine_status() -> EngineStatus {
     }
 }
 
+/// Salva o JSON do projeto no caminho escolhido pelo usuário no diálogo do sistema.
+#[tauri::command]
+fn save_project_file(path: String, contents: String) -> Result<(), String> {
+    let path: PathBuf = project_io::validate_project_path(&path)?;
+    project_io::write_project(&path, &contents)
+}
+
+/// Lê o JSON do projeto de um caminho escolhido pelo usuário.
+#[tauri::command]
+fn open_project_file(path: String) -> Result<String, String> {
+    let path: PathBuf = project_io::validate_project_path(&path)?;
+    project_io::read_project(&path)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
   tauri::Builder::default()
-    .invoke_handler(tauri::generate_handler![engine_status])
+    .plugin(tauri_plugin_dialog::init())
+    .invoke_handler(tauri::generate_handler![
+        engine_status,
+        save_project_file,
+        open_project_file
+    ])
     .setup(|app| {
       if cfg!(debug_assertions) {
         app.handle().plugin(

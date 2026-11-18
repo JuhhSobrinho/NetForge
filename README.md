@@ -2,7 +2,7 @@
 
 Simulador de redes para Windows, com motor próprio, interface moderna e foco educacional.
 
-> **Status: Fase 1 — Fundação concluída.** A janela Tauri abre e fala com o motor Rust por IPC (`engine_status`). Ainda não há funcionalidade de rede: ver [docs/PROTOCOLS.md](docs/PROTOCOLS.md).
+> **Status: Fase 2 concluída.** O app permite montar topologia (PC, switch, roteador, servidor), ligar portas, renomear, desfazer/refazer e salvar/abrir JSON. Ainda não há simulação: nenhum protocolo de rede está implementado (ver [docs/PROTOCOLS.md](docs/PROTOCOLS.md)).
 
 ## Objetivo
 

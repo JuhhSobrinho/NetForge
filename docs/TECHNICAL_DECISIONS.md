@@ -24,7 +24,12 @@ Todas as decisões abaixo estão **propostas** até a aprovação do responsáve
 
 ## ADR-003 — Canvas: React Flow como candidata, não como decisão final
 
-- **Status:** proposta (decisão final na Fase 2)
+- **Status:** aceita (2026-11-18). Medição com 200 equipamentos e 300 links (modo dev, Chromium headless via Playwright, 1280×800):
+  - Pan e zoom: 60 FPS médios, p95 de 16,7 ms.
+  - Arrastar equipamento: 60 FPS médios, pior quadro de 16,8 ms.
+  - Carregamento até todos os nós visíveis: cerca de 1,5 s (modo dev; build de produção não medido).
+  - Primeira medição tinha um quadro de 300 ms ao selecionar. A causa era recriar os 200 nós e 300 arestas a cada seleção. Corrigido com mesclagem preservando objetos inalterados (src/canvas/merge.ts) e atualização separada de seleção.
+  - Critério de saída (interação fluida com 200/300) atendido. React Flow mantido.
 - **Contexto:** o React Flow (`@xyflow/react`) tem licença MIT e suporte documentado a nós e arestas customizados com múltiplos handles. Não temos benchmark próprio com topologias grandes.
 - **Decisão:** adotar React Flow **atrás de uma camada de adaptação** (`apps/desktop/src/canvas/`), de modo que a troca por canvas próprio não reescreva o resto da UI.
 - **Alternativas:** canvas próprio em SVG/Canvas 2D (controle total, custo alto de zoom, pan, seleção e acessibilidade); Konva/Pixi (bom desempenho, menos recursos de grafo prontos).
@@ -100,3 +105,18 @@ Todas as decisões abaixo estão **propostas** até a aprovação do responsáve
 - **Status:** observação
 - **Contexto:** o diretório `net-forge/` está vazio e dentro de um repositório git maior do usuário (raiz em `C:\Users\julia`). Isso cria risco de commits acidentais no repositório errado.
 - **Recomendação:** criar um repositório próprio em `net-forge/` antes da Fase 1 (decisão do responsável).
+
+## ADR-014 — Topologia editada no frontend na Fase 2; regras de rede migram para o Rust na Fase 3
+
+- **Status:** aceita (2026-11-18)
+- **Contexto:** a Fase 2 é de canvas e edição. O motor Rust ainda não tem modelo de dispositivos, e mover cada edição por IPC antes disso acrescentaria latência e código sem benefício de simulação.
+- **Decisão:** o modelo de topologia (dispositivos, portas, links), as regras de conexão e a validação de JSON ficam em `apps/desktop/src/topology/model.ts`, como funções puras testadas com Vitest. Essa lógica **não contém comportamento de rede**. Na Fase 3, quando o motor precisar do grafo, o modelo passa para `crates/netforge-engine` e o frontend passa a consumi-lo via IPC.
+- **Alternativas:** modelo no Rust desde já (mais fiel ao ADR-002, porém mais trabalho sem ganho imediato); modelo só no React (rejeitado: mistura estado com componentes).
+- **Consequências:** há duas implementações temporárias da validação de JSON (TS e, na Fase 3, Rust). Os cenários de teste em `tests/scenarios/` devem valer para as duas.
+
+## ADR-015 — Abrir e salvar arquivos: diálogo nativo + comandos Rust com validação de caminho
+
+- **Status:** aceita (2026-11-18)
+- **Decisão:** o caminho é escolhido com o plugin `tauri-plugin-dialog` (diálogos nativos). A leitura e a escrita passam por dois comandos Rust (`open_project_file`, `save_project_file`) que exigem caminho absoluto, extensão `.json` e tamanho máximo de 5 MiB. Não há plugin `fs`: a permissão de arquivo fica restrita aos comandos do app e às duas permissões do diálogo (`dialog:allow-open`, `dialog:allow-save`).
+- **Motivo:** menor superfície de permissão (princípio já aplicado na Fase 1). O frontend não consegue ler caminhos arbitrários do disco.
+- **Consequências:** o caminho vindo do diálogo é confiável por ser escolhido pelo usuário, mas a validação continua no Rust.

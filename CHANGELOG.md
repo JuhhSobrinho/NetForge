@@ -5,10 +5,14 @@ Formato baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/). 
 ## [Não lançado]
 
 ### Adicionado
+- Fase 2: canvas com React Flow 13; equipamentos PC, switch, roteador e servidor com portas; ligações entre portas com validação (porta única, sem laço no mesmo equipamento); renomear, remover equipamento e link; undo/redo (100 passos); salvar e abrir projeto JSON com `schemaVersion` 1 via diálogo nativo; ADR-014 e ADR-015.
 - Fase 1: workspace Rust (`Cargo.toml` na raiz) com o crate `crates/netforge-engine`; app Tauri 2 em `apps/desktop` (React 19, TypeScript, Vite 8); comando IPC `engine_status` validado por testes Rust e Vitest; CSP restritiva e capability mínima (`core:default`).
 - Crates de projeto, dispositivos, protocolos, persistência e plugins ainda não foram criados: entram nas fases em que forem necessários.
 - Fase 0: documentação inicial em `docs/` (pesquisa, arquitetura, funcionalidades, roadmap, decisões técnicas, metodologia de engenharia reversa, análise de concorrentes, protocolos, estratégia de testes).
 - `README.md`, `CONTRIBUTING.md` e este `CHANGELOG.md`.
+
+### Corrigido
+- Canvas com 200 equipamentos: a seleção recriava todos os nós e arestas, gerando um quadro de ~300 ms. Agora só os objetos que mudam são atualizados (ADR-003).
 
 ### Observações
 - Nenhuma funcionalidade de simulação foi implementada ainda.
