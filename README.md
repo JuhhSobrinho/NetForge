@@ -1,0 +1,37 @@
+# NetForge
+
+Simulador de redes para Windows, com motor próprio, interface moderna e foco educacional.
+
+> **Status: Fase 1 — Fundação concluída.** A janela Tauri abre e fala com o motor Rust por IPC (`engine_status`). Ainda não há funcionalidade de rede: ver [docs/PROTOCOLS.md](docs/PROTOCOLS.md).
+
+## Objetivo
+
+Permitir criar topologias, configurar dispositivos, executar comandos, simular protocolos, observar pacotes e investigar problemas de conectividade — com um motor independente e testável.
+
+## O que existe hoje
+
+- [docs/RESEARCH.md](docs/RESEARCH.md) — pesquisa e ferramentas
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — arquitetura proposta
+- [docs/FEATURES.md](docs/FEATURES.md) — funcionalidades e prioridades
+- [docs/ROADMAP.md](docs/ROADMAP.md) — fases e gates
+- [docs/TECHNICAL_DECISIONS.md](docs/TECHNICAL_DECISIONS.md) — decisões (ADR)
+- [docs/REVERSE_ENGINEERING.md](docs/REVERSE_ENGINEERING.md) — metodologia comportamental
+- [docs/COMPETITOR_ANALYSIS.md](docs/COMPETITOR_ANALYSIS.md) — Packet Tracer, GNS3, EVE-NG
+- [docs/PROTOCOLS.md](docs/PROTOCOLS.md) — status de cada protocolo
+- [docs/TESTING_STRATEGY.md](docs/TESTING_STRATEGY.md) — estratégia de testes
+
+## O que ainda não existe
+
+Nenhum protocolo, dispositivo ou comando está implementado. Veja o status real em [docs/PROTOCOLS.md](docs/PROTOCOLS.md) e [docs/FEATURES.md](docs/FEATURES.md).
+
+## Stack proposta
+
+React + TypeScript + Vite (interface), Tauri 2 (desktop), Rust (motor), SQLite e JSON (persistência). Detalhes e justificativas em [docs/TECHNICAL_DECISIONS.md](docs/TECHNICAL_DECISIONS.md).
+
+## Contribuindo
+
+Veja [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Licença
+
+A definir (decisão pendente do responsável do projeto).
