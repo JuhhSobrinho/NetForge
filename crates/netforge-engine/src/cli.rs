@@ -5,7 +5,7 @@
 //! O motor não guarda sessão: o frontend envia a topologia atual, o modo e a linha digitada,
 //! e recebe a saída, o novo modo e, se houve configuração, a topologia alterada.
 
-use crate::sim::{run_dhcp, run_dns, run_ping, run_traceroute, DeviceTables};
+use crate::sim::{run_dhcp, run_dns, run_ping, run_tcp, run_traceroute, DeviceTables};
 use crate::topology::{netmask, Device, DeviceKind, StaticRoute, Topology, VlanMode};
 use serde::{Deserialize, Serialize};
 use std::net::Ipv4Addr;
@@ -144,6 +144,7 @@ impl Ctx<'_> {
             ["show", "mac", "address-table"] => return self.show_mac(),
             ["traceroute", ..] => return self.traceroute(&args),
             ["nslookup", ..] => return self.nslookup(&args),
+            ["tcp-test", ..] => return self.tcp_test(&args),
             ["ping", ..] => return self.ping(&args),
             _ => {}
         }
@@ -196,6 +197,7 @@ impl Ctx<'_> {
             ["ip", "name-server", ip] => self.name_server(Some(ip)),
             ["no", "ip", "name-server"] => self.name_server(None),
             ["ip", "dns-record", name, ip] => self.dns_record(name, ip),
+            ["ip", "tcp-listen", port] => self.tcp_listen(port),
             ["no", "ip", "default-gateway"] => self.set_gateway(None),
             _ => Err(unknown(line)),
         }
@@ -291,6 +293,43 @@ impl Ctx<'_> {
     }
 
     /// `nslookup <nome>`: consulta o servidor de nomes configurado.
+    fn tcp_listen(&mut self, port: &str) -> Result<(), String> {
+        if self.device().kind == DeviceKind::Switch {
+            return Err("portas TCP não existem em switches".into());
+        }
+        let p: u16 = port.parse().map_err(|_| format!("porta inválida: {port}"))?;
+        let mut t = self.working();
+        let list = &mut t.devices[self.index].tcp_listen;
+        if !list.contains(&p) {
+            list.push(p);
+        }
+        self.save(t)
+    }
+
+    /// `tcp-test <ip> <porta> [mensagem]`: abre a conexão, envia a mensagem, lê o eco e fecha.
+    fn tcp_test(&mut self, args: &[&str]) -> Result<(), String> {
+        if args.len() < 3 {
+            return Err(unknown(&args.join(" ")));
+        }
+        let port: u16 = args[2].parse().map_err(|_| format!("porta inválida: {}", args[2]))?;
+        let message = if args.len() > 3 { args[3..].join(" ") } else { "netforge".to_string() };
+        let outcome = run_tcp(self.topology, &self.device().id, args[1], port, &message)?;
+        if outcome.connected {
+            self.output.push(format!("Conexão estabelecida com {}:{}", args[1], port));
+        }
+        if let Some(e) = &outcome.echoed {
+            self.output.push(format!("Eco: {e}"));
+        }
+        if outcome.closed {
+            self.output.push("Conexão encerrada".into());
+        }
+        if let Some(e) = &outcome.error {
+            self.output.push(format!("% {e}"));
+            self.error = true;
+        }
+        Ok(())
+    }
+
     fn nslookup(&mut self, args: &[&str]) -> Result<(), String> {
         if args.len() != 2 {
             return Err(unknown(&args.join(" ")));
@@ -638,6 +677,7 @@ mod tests {
             dhcp_pool: None,
             name_server: None,
             dns_records: Vec::new(),
+            tcp_listen: Vec::new(),
         }
     }
 
@@ -887,6 +927,7 @@ mod tests {
             dhcp_pool: None,
             name_server: None,
             dns_records: Vec::new(),
+            tcp_listen: Vec::new(),
         });
         let s = CliSession { mode: Mode::Interface, interface: Some("p2".into()) };
         let out = execute(&t, "sw", s.clone(), "vlan access 10", None).unwrap();
@@ -904,5 +945,21 @@ mod tests {
         let t = topo();
         let out = run(&t, "r", CliSession { mode: Mode::Interface, interface: Some("p1".into()) }, "vlan access 5000");
         assert!(out.error);
+    }
+
+    #[test]
+    fn tcp_listen_and_tcp_test_commands_work_end_to_end() {
+        let mut t = topo();
+        t.devices[1].ports[0].ip = Some("10.0.1.1".into());
+        t.devices[1].ports[0].prefix_len = Some(24);
+        let s = run(&t, "r", CliSession { mode: Mode::Config, interface: None }, "ip tcp-listen 7");
+        let t2 = s.topology.expect("tcp-listen altera a topologia");
+        assert_eq!(t2.devices[1].tcp_listen, vec![7]);
+        let mut t3 = t2.clone();
+        t3.devices[0].ports[0].ip = Some("10.0.1.10".into());
+        t3.devices[0].ports[0].prefix_len = Some(24);
+        let out = run(&t3, "a", CliSession::default(), "tcp-test 10.0.1.1 7 olá");
+        assert!(out.output.iter().any(|l| l == "Eco: olá"), "{:?}", out.output);
+        assert!(out.output.iter().any(|l| l == "Conexão encerrada"), "{:?}", out.output);
     }
 }

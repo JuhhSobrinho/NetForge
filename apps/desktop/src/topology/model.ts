@@ -111,6 +111,8 @@ export interface Device {
   nameServer?: string
   /** Registros DNS servidos pelo equipamento (`ip dns-record`). */
   dnsRecords?: DnsRecord[]
+  /** Portas TCP em escuta (`ip tcp-listen`). */
+  tcpListen?: number[]
 }
 
 export interface PortRef {
@@ -308,6 +310,13 @@ export function parseTopology(json: string): Result<Topology> {
       if (!isValidIpv4(String(p?.network)) || !isValidIpv4(String(p?.start)) || !isValidIpv4(String(p?.end)) || !isValidIpv4(String(p?.gateway)))
         return fail('Pool DHCP com endereço inválido.')
       if (!Number.isInteger(p.prefixLen) || p.prefixLen < 0 || p.prefixLen > 32) return fail('Prefixo do pool DHCP inválido.')
+    }
+    if (d.tcpListen !== undefined) {
+      if (!Array.isArray(d.tcpListen)) return fail('Portas TCP inválidas.')
+      if (d.tcpListen.length > 0 && d.kind === 'switch') return fail('Portas TCP não existem em switches.')
+      for (const p of d.tcpListen) {
+        if (!Number.isInteger(p) || p < 1 || p > 65535) return fail('Porta TCP fora de 1–65535.')
+      }
     }
     if (d.nameServer !== undefined) {
       if (d.kind !== 'pc' && d.kind !== 'server') return fail('Servidor de nomes só existe em PCs e servidores.')

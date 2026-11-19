@@ -21,6 +21,7 @@ use crate::dns;
 use crate::dhcp::{DhcpMessage, CLIENT_PORT, MSG_ACK, MSG_DISCOVER, MSG_OFFER, MSG_REQUEST, OP_REPLY as DHCP_REPLY, OP_REQUEST as DHCP_REQUEST, SERVER_PORT};
 use crate::ipv4::{Ipv4Packet, DEFAULT_TTL, PROTO_ICMP};
 use crate::udp::{UdpDatagram, PROTO_UDP};
+use crate::tcp::{Segment, FLAG_ACK, FLAG_FIN, FLAG_PSH, FLAG_RST, FLAG_SYN, PROTO_TCP};
 use crate::pcap::PcapWriter;
 use crate::topology::{netmask, parse_address, Address, DeviceKind, DhcpPool, Topology, VlanMode};
 use serde::{Deserialize, Serialize};
@@ -257,6 +258,7 @@ struct Route {
 }
 
 struct Runtime {
+    tcp_listen: Vec<u16>,
     ports_vlan: Vec<PortVlan>,
     pool: Option<Pool>,
     dns_records: Vec<(String, Ipv4Addr)>,
@@ -299,6 +301,8 @@ struct Simulation {
     echo: Option<EchoState>,
     dhcp: Option<DhcpClient>,
     dns: Option<DnsClient>,
+    tcp_client: Option<TcpClient>,
+    tcp_conns: Vec<TcpConn>,
 }
 
 /// Executa `count` echo requests de `source_id` para `target` e devolve o resultado.
@@ -517,6 +521,7 @@ impl Simulation {
                 waiting: HashMap::new(),
                 mac_table: HashMap::new(),
                 routes,
+                tcp_listen: d.tcp_listen.clone(),
                 ports_vlan,
                 pool,
                 dns_records,
@@ -538,6 +543,8 @@ impl Simulation {
             echo: None,
             dhcp: None,
             dns: None,
+            tcp_client: None,
+            tcp_conns: Vec::new(),
         })
     }
 
@@ -825,6 +832,7 @@ impl Simulation {
             match pkt.protocol {
                 PROTO_ICMP => self.icmp_rx(dev, &pkt),
                 PROTO_UDP => self.udp_local_rx(dev, &pkt),
+                PROTO_TCP => self.tcp_local_rx(dev, &pkt),
                 other => self.push_log(self.now, dev, LogKind::Drop, format!("protocolo IP {other} não suportado")),
             }
             return;
@@ -1386,6 +1394,258 @@ impl Simulation {
     }
 }
 
+/// Estado do cliente TCP.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TcpState {
+    SynSent,
+    DataSent,
+    FinWait,
+}
+
+/// Cliente TCP em andamento (uma conexão por execução de `tcp-test`).
+struct TcpClient {
+    dev: usize,
+    src_ip: Ipv4Addr,
+    src_port: u16,
+    dst: Ipv4Addr,
+    dst_port: u16,
+    isn: u32,
+    peer_seq: u32,
+    state: TcpState,
+    msg: Vec<u8>,
+    connected: bool,
+    echo: Option<Vec<u8>>,
+    done: bool,
+    error: Option<String>,
+}
+
+/// Conexão aceita por um servidor (uma por par origem/porta).
+struct TcpConn {
+    dev: usize,
+    local_port: u16,
+    peer_ip: Ipv4Addr,
+    peer_port: u16,
+    our_seq: u32,
+    expected: u32,
+}
+
+const TCP_SERVER_ISN: u32 = 5_000;
+const TCP_CLIENT_ISN: u32 = 1_000;
+const TCP_CLIENT_PORT: u16 = 40_000;
+
+/// Resultado de uma conexão TCP de teste.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TcpOutcome {
+    pub connected: bool,
+    pub echoed: Option<String>,
+    pub closed: bool,
+    pub error: Option<String>,
+    pub log: Vec<LogEntry>,
+    pub log_truncated: bool,
+}
+
+/// Abre uma conexão TCP até `target:port`, envia `message`, lê o eco e fecha.
+pub fn run_tcp(topology: &Topology, client_id: &str, target: &str, port: u16, message: &str) -> Result<TcpOutcome, String> {
+    topology.validate()?;
+    if message.len() > 512 {
+        return Err("mensagem TCP maior que 512 bytes".into());
+    }
+    let dst: Ipv4Addr = target.trim().parse().map_err(|_| format!("endereço inválido: {target}"))?;
+    let dev = topology
+        .devices
+        .iter()
+        .position(|d| d.id == client_id)
+        .ok_or_else(|| "equipamento não existe".to_string())?;
+    if !topology.devices[dev].kind.is_host() {
+        return Err("somente PCs e servidores abrem conexões TCP".into());
+    }
+    let mut sim = Simulation::build(topology)?;
+    let (egress, _) = sim.lookup(dev, dst).ok_or("sem rota até o destino")?;
+    let (src_ip, _) = sim.devices[dev].ifaces[egress].addr.ok_or("interface sem endereço IP")?;
+    sim.tcp_client = Some(TcpClient {
+        dev,
+        src_ip,
+        src_port: TCP_CLIENT_PORT,
+        dst,
+        dst_port: port,
+        isn: TCP_CLIENT_ISN,
+        peer_seq: 0,
+        state: TcpState::SynSent,
+        msg: message.as_bytes().to_vec(),
+        connected: false,
+        echo: None,
+        done: false,
+        error: None,
+    });
+    let syn = Segment { src_port: TCP_CLIENT_PORT, dst_port: port, seq: TCP_CLIENT_ISN, ack: 0, flags: FLAG_SYN, payload: Vec::new() };
+    sim.send_tcp(dev, src_ip, &syn, dst)?;
+    sim.run_until_tcp_done();
+    let c = sim.tcp_client.take().ok_or("estado TCP perdido")?;
+    let error = c.error.or_else(|| if c.done { None } else { Some("sem resposta do servidor TCP".to_string()) });
+    Ok(TcpOutcome {
+        connected: c.connected,
+        echoed: c.echo.map(|b| String::from_utf8_lossy(&b).to_string()),
+        closed: c.done,
+        error,
+        log: sim.log,
+        log_truncated: sim.log_truncated,
+    })
+}
+
+impl Simulation {
+    fn run_until_tcp_done(&mut self) {
+        loop {
+            if self.tcp_client.as_ref().is_some_and(|c| c.done || c.error.is_some()) {
+                break;
+            }
+            let Some(p) = self.queue.pop() else { break };
+            self.events += 1;
+            if self.events > MAX_EVENTS {
+                self.storm = true;
+                break;
+            }
+            self.now = p.at;
+            self.deliver(p.to, p.bytes);
+        }
+    }
+
+    /// Envia um segmento TCP pela rota do equipamento.
+    fn send_tcp(&mut self, dev: usize, src: Ipv4Addr, seg: &Segment, dst: Ipv4Addr) -> Result<(), String> {
+        let bytes = seg.encode(src, dst);
+        let pkt = self.new_ipv4(src, dst, PROTO_TCP, bytes);
+        self.send_ip(dev, pkt)
+    }
+
+    /// Segmento TCP recebido em endereço local: cliente em andamento ou servidor.
+    fn tcp_local_rx(&mut self, dev: usize, pkt: &Ipv4Packet) {
+        let seg = match Segment::decode(&pkt.payload, pkt.src, pkt.dst) {
+            Ok(s) => s,
+            Err(e) => {
+                self.push_log(self.now, dev, LogKind::Drop, e);
+                return;
+            }
+        };
+        let is_client = self.tcp_client.as_ref().is_some_and(|c| c.dev == dev && c.src_port == seg.dst_port);
+        if is_client {
+            self.tcp_client_rx(pkt.src, &seg);
+        } else {
+            self.tcp_server_rx(dev, pkt.dst, pkt.src, seg);
+        }
+    }
+
+    fn tcp_client_rx(&mut self, from: Ipv4Addr, seg: &Segment) {
+        let Some(c) = self.tcp_client.as_mut() else { return };
+        if from != c.dst || seg.src_port != c.dst_port {
+            return;
+        }
+        if seg.has(FLAG_RST) {
+            c.error = Some(format!("conexão recusada pelo destino na porta {}", c.dst_port));
+            return;
+        }
+        let (dev, src_ip, src_port, dst, dst_port) = (c.dev, c.src_ip, c.src_port, c.dst, c.dst_port);
+        match c.state {
+            TcpState::SynSent => {
+                if seg.has(FLAG_SYN) && seg.has(FLAG_ACK) && seg.ack == c.isn + 1 {
+                    c.connected = true;
+                    c.peer_seq = seg.seq.wrapping_add(1);
+                    c.state = TcpState::DataSent;
+                    let msg = c.msg.clone();
+                    let data = Segment { src_port, dst_port, seq: c.isn + 1, ack: c.peer_seq, flags: FLAG_ACK | FLAG_PSH, payload: msg };
+                    let _ = self.send_tcp(dev, src_ip, &data, dst);
+                }
+            }
+            TcpState::DataSent => {
+                if seg.payload.is_empty() {
+                    return;
+                }
+                c.echo = Some(seg.payload.clone());
+                c.peer_seq = seg.seq.wrapping_add(seg.payload.len() as u32);
+                c.state = TcpState::FinWait;
+                let seq = c.isn + 1 + c.msg.len() as u32;
+                let peer_seq = c.peer_seq;
+                let ack = Segment { src_port, dst_port, seq, ack: peer_seq, flags: FLAG_ACK, payload: Vec::new() };
+                let fin = Segment { src_port, dst_port, seq, ack: peer_seq, flags: FLAG_FIN | FLAG_ACK, payload: Vec::new() };
+                let _ = self.send_tcp(dev, src_ip, &ack, dst);
+                let _ = self.send_tcp(dev, src_ip, &fin, dst);
+            }
+            TcpState::FinWait => {
+                if seg.has(FLAG_FIN) {
+                    c.done = true;
+                    let ack = Segment {
+                        src_port,
+                        dst_port,
+                        seq: c.isn + 2 + c.msg.len() as u32,
+                        ack: seg.seq.wrapping_add(1),
+                        flags: FLAG_ACK,
+                        payload: Vec::new(),
+                    };
+                    let _ = self.send_tcp(dev, src_ip, &ack, dst);
+                }
+            }
+        }
+    }
+
+    /// Servidor: aceita conexões nas portas de escuta, faz eco dos dados e fecha quando o par fecha.
+    fn tcp_server_rx(&mut self, dev: usize, local_ip: Ipv4Addr, peer_ip: Ipv4Addr, seg: Segment) {
+        if !self.devices[dev].tcp_listen.contains(&seg.dst_port) {
+            if !seg.has(FLAG_RST) {
+                let rst = Segment {
+                    src_port: seg.dst_port,
+                    dst_port: seg.src_port,
+                    seq: 0,
+                    ack: seg.seq.wrapping_add(seg.seq_len()),
+                    flags: FLAG_RST | FLAG_ACK,
+                    payload: Vec::new(),
+                };
+                let _ = self.send_tcp(dev, local_ip, &rst, peer_ip);
+            }
+            self.push_log(self.now, dev, LogKind::Drop, format!("porta TCP {} fechada", seg.dst_port));
+            return;
+        }
+        let idx = self.tcp_conns.iter().position(|c| c.dev == dev && c.local_port == seg.dst_port && c.peer_ip == peer_ip && c.peer_port == seg.src_port);
+        let Some(idx) = idx else {
+            if seg.has(FLAG_SYN) && !seg.has(FLAG_ACK) {
+                let expected = seg.seq.wrapping_add(1);
+                self.tcp_conns.push(TcpConn {
+                    dev,
+                    local_port: seg.dst_port,
+                    peer_ip,
+                    peer_port: seg.src_port,
+                    our_seq: TCP_SERVER_ISN + 1,
+                    expected,
+                });
+                let synack = Segment { src_port: seg.dst_port, dst_port: seg.src_port, seq: TCP_SERVER_ISN, ack: expected, flags: FLAG_SYN | FLAG_ACK, payload: Vec::new() };
+                let _ = self.send_tcp(dev, local_ip, &synack, peer_ip);
+            }
+            return;
+        };
+        if seg.has(FLAG_FIN) {
+            let expected = seg.seq.wrapping_add(seg.payload.len() as u32).wrapping_add(1);
+            let our_seq = self.tcp_conns[idx].our_seq;
+            let finack = Segment { src_port: seg.dst_port, dst_port: seg.src_port, seq: our_seq, ack: expected, flags: FLAG_FIN | FLAG_ACK, payload: Vec::new() };
+            let _ = self.send_tcp(dev, local_ip, &finack, peer_ip);
+            self.tcp_conns.remove(idx);
+            return;
+        }
+        if !seg.payload.is_empty() && seg.seq == self.tcp_conns[idx].expected {
+            let len = seg.payload.len() as u32;
+            let conn = &mut self.tcp_conns[idx];
+            conn.expected = conn.expected.wrapping_add(len);
+            let echo = Segment {
+                src_port: seg.dst_port,
+                dst_port: seg.src_port,
+                seq: conn.our_seq,
+                ack: conn.expected,
+                flags: FLAG_ACK | FLAG_PSH,
+                payload: seg.payload.clone(),
+            };
+            conn.our_seq = conn.our_seq.wrapping_add(len);
+            let _ = self.send_tcp(dev, local_ip, &echo, peer_ip);
+        }
+    }
+}
+
 /// Decodifica um quadro por camada. Retorna `None` se nem o Ethernet é válido.
 pub fn frame_info(bytes: &[u8]) -> Option<FrameInfo> {
     let frame = Frame::decode(bytes).ok()?;
@@ -1423,6 +1683,9 @@ pub fn frame_info(bytes: &[u8]) -> Option<FrameInfo> {
                             info.protocol = "DHCP".into();
                         }
                     }
+                }
+                if p.protocol == PROTO_TCP {
+                    info.protocol = "TCP".into();
                 }
                 if p.protocol == PROTO_ICMP {
                     if let Ok(e) = IcmpEcho::decode(&p.payload) {
@@ -1491,6 +1754,7 @@ mod tests {
             dhcp_pool: None,
             name_server: None,
             dns_records: Vec::new(),
+            tcp_listen: Vec::new(),
         }
     }
 
@@ -1511,6 +1775,7 @@ mod tests {
             dhcp_pool: None,
             name_server: None,
             dns_records: Vec::new(),
+            tcp_listen: Vec::new(),
         }
     }
 
@@ -1995,5 +2260,39 @@ mod tests {
         let out = run_ping(&vlan_switch_topology(), "a", "10.0.9.2", 1).unwrap();
         let sw = out.tables.iter().find(|t| t.device_id == "sw").unwrap();
         assert!(sw.mac_table.iter().all(|m| m.vlan == 10));
+    }
+
+    fn tcp_topology(listen: bool) -> Topology {
+        let client = host("c", "10.0.6.1", 24, None);
+        let mut server = host("s", "10.0.6.2", 24, None);
+        if listen {
+            server.tcp_listen = vec![7];
+        }
+        topo(
+            vec![client, server, switch("sw")],
+            vec![link("l1", ("c", "p1"), ("sw", "p1")), link("l2", ("s", "p1"), ("sw", "p2"))],
+        )
+    }
+
+    #[test]
+    fn tcp_handshake_echo_and_close_through_a_switch() {
+        let out = run_tcp(&tcp_topology(true), "c", "10.0.6.2", 7, "hello").unwrap();
+        assert!(out.error.is_none(), "{:?}", out.error);
+        assert!(out.connected);
+        assert_eq!(out.echoed.as_deref(), Some("hello"));
+        assert!(out.closed);
+    }
+
+    #[test]
+    fn tcp_closed_port_is_refused_with_rst() {
+        let out = run_tcp(&tcp_topology(false), "c", "10.0.6.2", 7, "hello").unwrap();
+        assert!(!out.connected);
+        assert!(out.error.unwrap().contains("recusada"));
+    }
+
+    #[test]
+    fn tcp_segments_appear_in_the_log_with_flags_in_labels() {
+        let out = run_tcp(&tcp_topology(true), "c", "10.0.6.2", 7, "x").unwrap();
+        assert!(out.log.iter().any(|e| e.frame.as_ref().is_some_and(|f| f.protocol == "TCP")));
     }
 }

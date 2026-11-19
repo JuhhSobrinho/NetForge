@@ -15,6 +15,7 @@ pub mod icmp;
 pub mod ipv4;
 pub mod pcap;
 pub mod sim;
+pub mod tcp;
 pub mod topology;
 
 /// Versão do motor, vinda do `Cargo.toml` do workspace.

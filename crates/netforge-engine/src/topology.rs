@@ -116,6 +116,9 @@ pub struct Device {
     /// Registros DNS servidos pelo equipamento (`ip dns-record`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dns_records: Vec<DnsRecord>,
+    /// Portas TCP em escuta (`ip tcp-listen`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tcp_listen: Vec<u16>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -199,6 +202,12 @@ impl Topology {
                 for a in [&p.network, &p.start, &p.end, &p.gateway] {
                     a.parse::<Ipv4Addr>().map_err(|_| format!("endereço inválido no pool DHCP: {a}"))?;
                 }
+            }
+            if !d.tcp_listen.is_empty() && d.kind == DeviceKind::Switch {
+                return Err(format!("portas TCP não existem em switches: {}", d.name));
+            }
+            if d.tcp_listen.contains(&0) {
+                return Err("porta TCP 0 não é válida".into());
             }
             if let Some(ns) = &d.name_server {
                 if !d.kind.is_host() {
@@ -301,6 +310,7 @@ pub(crate) fn sample_pc(id: &str, ip: Option<&str>) -> Device {
         dhcp_pool: None,
         name_server: None,
         dns_records: Vec::new(),
+            tcp_listen: Vec::new(),
     }
 }
 
@@ -326,6 +336,7 @@ mod tests {
                     dhcp_pool: None,
                     name_server: None,
                     dns_records: Vec::new(),
+            tcp_listen: Vec::new(),
                 },
             ],
             links: vec![
