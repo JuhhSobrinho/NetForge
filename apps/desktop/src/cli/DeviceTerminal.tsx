@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { Device, Topology } from '../topology/model'
-import { cliExecute, type CliSession } from './engine'
+import { cliExecute, type CliSession, type DeviceTables } from './engine'
 
 const START: CliSession = { mode: 'user', interface: null }
 
@@ -8,11 +8,15 @@ const START: CliSession = { mode: 'user', interface: null }
 export function DeviceTerminal({
   topology,
   device,
+  runtime,
   onTopology,
+  onRuntime,
 }: {
   topology: Topology
   device: Device
+  runtime: DeviceTables[] | null
   onTopology: (t: Topology) => void
+  onRuntime: (t: DeviceTables[]) => void
 }) {
   const [session, setSession] = useState<CliSession>(START)
   const [prompt, setPrompt] = useState('')
@@ -23,7 +27,7 @@ export function DeviceTerminal({
 
   // Obtém o prompt inicial do equipamento.
   useEffect(() => {
-    cliExecute(topology, device.id, START, '')
+    cliExecute(topology, device.id, START, '', runtime)
       .then((r) => setPrompt(r.prompt))
       .catch((e: unknown) => setLines([`% ${String(e)}`]))
     // Só na montagem: o terminal é recriado ao trocar de equipamento (key no pai).
@@ -42,10 +46,11 @@ export function DeviceTerminal({
     if (line === '') return
     setBusy(true)
     try {
-      const r = await cliExecute(topology, device.id, session, line)
+      const r = await cliExecute(topology, device.id, session, line, runtime)
       setLines((l) => [...l, ...r.output])
       setSession(r.session)
       setPrompt(r.prompt)
+      if (r.runtime) onRuntime(r.runtime)
       if (r.topology) {
         onTopology(r.topology)
         setLines((l) => [...l, '(configuração aplicada)'])

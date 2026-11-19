@@ -57,10 +57,10 @@ Requisito do briefing: parser próprio e respostas baseadas no estado real.
 |---|---|---|
 | `show ip interface brief` | P0 | 4 (implementado) |
 | `show ip route` | P0 | 4 (implementado) |
-| `show arp` | P0 | 3/4 (pendente: depende de tabelas de execução persistentes) |
-| `show mac address-table` | P0 | 4 (pendente: mesma razão de show arp) |
+| `show arp` | P0 | 3/4 (implementado: tabela da última execução de ping ou traceroute) |
+| `show mac address-table` | P0 | 4 (implementado para switches: tabela da última execução) |
 | `ping` | P0 | 3 (implementado) |
-| `traceroute` | P1 | 4 (pendente) |
+| `traceroute` | P1 | 4 (implementado: TTL crescente, até 16 saltos) |
 | `configure terminal` | P0 | 4 (implementado) |
 | `interface` | P0 | 4 (implementado; nomes `p1`, `p2`... ou `porta 1`) |
 | `ip address` | P0 | 4 (implementado) |

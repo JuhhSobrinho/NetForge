@@ -142,3 +142,7 @@ Todas as decisões abaixo estão **propostas** até a aprovação do responsáve
   - O modo se perde quando o terminal é recriado (ao trocar de equipamento). Isso é uma limitação conhecida, não um bug.
   - `show arp` e `show mac address-table` ficam de fora até o motor manter tabelas entre execuções; a decisão é deliberadamente adiada.
   - A sintaxe de comandos é do NetForge (inspirada em CLIs de roteadores), e as interfaces são nomeadas `p1`, `p2`... para não copiar nomes de equipamentos reais.
+
+### Atualização (mesma fase)
+
+As tabelas ARP e MAC passaram a ser devolvidas pelo motor ao final de cada ping ou traceroute (`tables`). O frontend guarda a última execução e a envia de volta aos comandos `show arp` e `show mac address-table`. O motor continua sem estado entre chamadas. Consequência: as tabelas mostram a última execução, não um estado contínuo.

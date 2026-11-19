@@ -20,7 +20,7 @@ use crate::icmp::{
 use crate::ipv4::{Ipv4Packet, DEFAULT_TTL, PROTO_ICMP};
 use crate::pcap::PcapWriter;
 use crate::topology::{netmask, parse_address, Address, DeviceKind, Topology};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap};
 use std::net::Ipv4Addr;
@@ -78,7 +78,79 @@ pub struct PingOutcome {
     pub log: Vec<LogEntry>,
     pub log_truncated: bool,
     pub pcap: Vec<u8>,
+    /// Tabelas ARP e MAC ao final da execução (usadas por show arp e show mac address-table).
+    pub tables: Vec<DeviceTables>,
 }
+
+/// Entrada da tabela ARP de um equipamento.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArpEntry {
+    pub address: String,
+    pub mac: String,
+    pub port: String,
+}
+
+/// Entrada da tabela MAC de um switch.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MacEntry {
+    pub mac: String,
+    pub port: String,
+}
+
+/// Tabelas de um equipamento ao final de uma execução.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceTables {
+    pub device_id: String,
+    pub arp: Vec<ArpEntry>,
+    pub mac_table: Vec<MacEntry>,
+}
+
+impl Simulation {
+    /// Interface conectada à sub-rede do endereço, usada como "porta" da entrada ARP.
+    fn port_for_address(&self, dev: usize, ip: Ipv4Addr) -> String {
+        let d = &self.devices[dev];
+        for (i, f) in d.ifaces.iter().enumerate() {
+            if let Some((addr, p)) = f.addr {
+                if u32::from(ip) & netmask(p) == u32::from(addr) & netmask(p) {
+                    return d.port_ids.get(i).cloned().unwrap_or_default();
+                }
+            }
+        }
+        "-".to_string()
+    }
+
+    fn tables(&self) -> Vec<DeviceTables> {
+        (0..self.devices.len())
+            .map(|dev| {
+                let d = &self.devices[dev];
+                let mut arp: Vec<ArpEntry> = d
+                    .arp
+                    .iter()
+                    .map(|(ip, mac)| ArpEntry {
+                        address: ip.to_string(),
+                        mac: mac_text(mac),
+                        port: self.port_for_address(dev, *ip),
+                    })
+                    .collect();
+                arp.sort_by_key(|e| e.address.parse::<Ipv4Addr>().map(u32::from).unwrap_or(0));
+                let mut mac_table: Vec<MacEntry> = d
+                    .mac_table
+                    .iter()
+                    .map(|(mac, port)| MacEntry {
+                        mac: mac_text(mac),
+                        port: d.port_ids.get(*port).cloned().unwrap_or_default(),
+                    })
+                    .collect();
+                mac_table.sort_by(|a, b| a.mac.cmp(&b.mac));
+                DeviceTables { device_id: d.id.clone(), arp, mac_table }
+            })
+            .collect()
+    }
+}
+
 
 struct Pending {
     at: u64,
@@ -121,6 +193,8 @@ struct Route {
 }
 
 struct Runtime {
+    id: String,
+    port_ids: Vec<String>,
     name: String,
     kind: DeviceKind,
     ifaces: Vec<Iface>,
@@ -137,6 +211,9 @@ struct EchoState {
     started_at: u64,
     reply_at: Option<u64>,
     error: Option<String>,
+    /// Equipamento que respondeu com erro ICMP (para o traceroute).
+    hop: Option<Ipv4Addr>,
+    hop_at: Option<u64>,
 }
 
 struct Simulation {
@@ -183,8 +260,8 @@ pub fn run_ping(topology: &Topology, source_id: &str, target: &str, count: u8) -
     let mut transmitted = 0u8;
     for seq in 1..=count as u16 {
         transmitted += 1;
-        sim.echo = Some(EchoState { target: target_ip, seq, started_at: sim.now, reply_at: None, error: None });
-        if let Err(e) = sim.send_echo_request(src, target_ip, seq) {
+        sim.echo = Some(EchoState { target: target_ip, seq, started_at: sim.now, reply_at: None, error: None, hop: None, hop_at: None });
+        if let Err(e) = sim.send_echo_request(src, target_ip, seq, DEFAULT_TTL) {
             error = Some(e);
             break;
         }
@@ -210,6 +287,7 @@ pub fn run_ping(topology: &Topology, source_id: &str, target: &str, count: u8) -
         }
     }
 
+    let tables = sim.tables();
     Ok(PingOutcome {
         target: target_ip.to_string(),
         transmitted,
@@ -218,8 +296,88 @@ pub fn run_ping(topology: &Topology, source_id: &str, target: &str, count: u8) -
         log: sim.log,
         log_truncated: sim.log_truncated,
         pcap: sim.pcap.into_bytes(),
+        tables,
     })
 }
+
+/// Limite de saltos do traceroute.
+pub const MAX_TRACE_HOPS: u8 = 16;
+
+/// Um salto do traceroute. `address` é o equipamento que respondeu neste TTL.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TraceHop {
+    pub ttl: u8,
+    pub address: Option<String>,
+    pub rtt_us: Option<u64>,
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TraceOutcome {
+    pub target: String,
+    pub hops: Vec<TraceHop>,
+    pub reached: bool,
+    pub error: Option<String>,
+    pub tables: Vec<DeviceTables>,
+}
+
+/// Traceroute: um echo por TTL crescente. Cada equipamento intermediário responde com
+/// tempo excedido; o destino responde com echo reply.
+pub fn run_traceroute(topology: &Topology, source_id: &str, target: &str, max_hops: u8) -> Result<TraceOutcome, String> {
+    topology.validate()?;
+    if max_hops == 0 || max_hops > MAX_TRACE_HOPS {
+        return Err(format!("número de saltos deve ser de 1 a {MAX_TRACE_HOPS}"));
+    }
+    let target_ip: Ipv4Addr = target
+        .trim()
+        .parse()
+        .map_err(|_| format!("endereço de destino inválido: {target}"))?;
+    let src = topology
+        .devices
+        .iter()
+        .position(|d| d.id == source_id)
+        .ok_or_else(|| "equipamento de origem não existe".to_string())?;
+    let mut sim = Simulation::build(topology)?;
+    sim.check_source(src, target_ip)?;
+
+    let mut hops = Vec::new();
+    let mut reached = false;
+    let mut error = None;
+    for ttl in 1..=max_hops {
+        let seq = ttl as u16;
+        let start = sim.now;
+        sim.echo = Some(EchoState { target: target_ip, seq, started_at: start, reply_at: None, error: None, hop: None, hop_at: None });
+        if let Err(e) = sim.send_echo_request(src, target_ip, seq, ttl) {
+            error = Some(e);
+            break;
+        }
+        sim.run_until_done();
+        if sim.storm {
+            error = Some(format!("limite de {MAX_EVENTS} eventos atingido: possível laço de camada 2"));
+            break;
+        }
+        let st = sim.echo.take().ok_or("estado do traceroute perdido")?;
+        if let Some(at) = st.reply_at {
+            hops.push(TraceHop { ttl, address: Some(target_ip.to_string()), rtt_us: Some(at - start), note: None });
+            reached = true;
+            break;
+        }
+        match (st.hop, st.hop_at, st.error) {
+            (Some(h), Some(at), Some(note)) => {
+                let stop = note.contains("inalcançável");
+                hops.push(TraceHop { ttl, address: Some(h.to_string()), rtt_us: Some(at - start), note: Some(note) });
+                if stop {
+                    break;
+                }
+            }
+            _ => hops.push(TraceHop { ttl, address: None, rtt_us: None, note: Some("sem resposta".into()) }),
+        }
+    }
+    Ok(TraceOutcome { target: target_ip.to_string(), hops, reached, error, tables: sim.tables() })
+}
+
 
 fn endpoint_of(topology: &Topology, index: &HashMap<&str, usize>, device: &str, port: &str) -> Result<Endpoint, String> {
     let dev = *index.get(device).ok_or_else(|| format!("equipamento inexistente: {device}"))?;
@@ -264,6 +422,8 @@ impl Simulation {
                 routes.push(Route { net: 0, prefix: 0, via });
             }
             devices.push(Runtime {
+                id: d.id.clone(),
+                port_ids: d.ports.iter().map(|p| p.id.clone()).collect(),
                 name: d.name.clone(),
                 kind: d.kind,
                 ifaces,
@@ -376,11 +536,12 @@ impl Simulation {
         Ipv4Packet { src, dst, ttl: DEFAULT_TTL, protocol, id, payload }
     }
 
-    fn send_echo_request(&mut self, host: usize, dst: Ipv4Addr, seq: u16) -> Result<(), String> {
+    fn send_echo_request(&mut self, host: usize, dst: Ipv4Addr, seq: u16, ttl: u8) -> Result<(), String> {
         let (port, _) = self.lookup(host, dst).ok_or("sem rota")?;
         let (src_ip, _) = self.devices[host].ifaces[port].addr.ok_or("interface sem endereço IP")?;
         let icmp = IcmpEcho { kind: TYPE_ECHO_REQUEST, id: ECHO_ID, seq, data: vec![0xab; ECHO_DATA_LEN] }.encode();
-        let pkt = self.new_ipv4(src_ip, dst, PROTO_ICMP, icmp);
+        let mut pkt = self.new_ipv4(src_ip, dst, PROTO_ICMP, icmp);
+        pkt.ttl = ttl;
         self.send_ip(host, pkt)
     }
 
@@ -678,9 +839,12 @@ impl Simulation {
         } else {
             format!("tempo excedido em trânsito informado por {from}")
         };
+        let now = self.now;
         if let Some(st) = self.echo.as_mut() {
             if st.reply_at.is_none() && st.error.is_none() && orig_dst == st.target && orig_id == ECHO_ID && orig_seq == st.seq {
                 st.error = Some(reason);
+                st.hop = Some(from);
+                st.hop_at = Some(now);
             }
         }
     }
@@ -992,5 +1156,44 @@ mod tests {
         t.devices[0].ports[0].shutdown = true;
         let err = run_ping(&t, "a", "10.0.2.10", 1).unwrap_err();
         assert!(err.contains("interface ativa"), "{err}");
+    }
+
+    #[test]
+    fn traceroute_lists_the_router_then_the_target() {
+        let out = run_traceroute(&routed_pair(), "a", "10.0.2.10", 8).unwrap();
+        assert!(out.error.is_none(), "{:?}", out.error);
+        assert!(out.reached);
+        assert_eq!(out.hops.len(), 2);
+        assert_eq!(out.hops[0].address.as_deref(), Some("10.0.1.1"));
+        assert_eq!(out.hops[1].address.as_deref(), Some("10.0.2.10"));
+        assert!(out.hops[0].rtt_us.is_some() && out.hops[1].rtt_us.is_some());
+    }
+
+    #[test]
+    fn traceroute_stops_at_unreachable_network() {
+        let out = run_traceroute(&routed_pair(), "a", "172.16.0.1", 8).unwrap();
+        assert!(!out.reached);
+        let last = out.hops.last().unwrap();
+        assert_eq!(last.address.as_deref(), Some("10.0.1.1"));
+        assert!(last.note.as_deref().unwrap().contains("inalcançável"));
+    }
+
+    #[test]
+    fn traceroute_rejects_invalid_hop_limit() {
+        assert!(run_traceroute(&routed_pair(), "a", "10.0.2.10", 0).is_err());
+        assert!(run_traceroute(&routed_pair(), "a", "10.0.2.10", 17).is_err());
+    }
+
+    #[test]
+    fn ping_returns_arp_and_mac_tables() {
+        let out = run_ping(&two_pcs_and_switch(), "a", "10.0.0.2", 1).unwrap();
+        let a = out.tables.iter().find(|t| t.device_id == "a").unwrap();
+        assert_eq!(a.arp.len(), 1);
+        assert_eq!(a.arp[0].address, "10.0.0.2");
+        assert_eq!(a.arp[0].port, "p1");
+        let sw = out.tables.iter().find(|t| t.device_id == "sw").unwrap();
+        assert_eq!(sw.mac_table.len(), 2);
+        let ports: Vec<&str> = sw.mac_table.iter().map(|m| m.port.as_str()).collect();
+        assert!(ports.contains(&"p1") && ports.contains(&"p2"));
     }
 }

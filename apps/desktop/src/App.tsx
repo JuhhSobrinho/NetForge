@@ -24,6 +24,7 @@ import {
 } from './topology/model'
 import { createStressTopology } from './topology/stress'
 import { PingPanel } from './ping/PingPanel'
+import type { DeviceTables } from './cli/engine'
 import { DeviceTerminal } from './cli/DeviceTerminal'
 import './App.css'
 
@@ -48,6 +49,8 @@ export default function App() {
   const [filePath, setFilePath] = useState<string | null>(null)
   const [message, setMessage] = useState<Message | null>(null)
   const [engineVersion, setEngineVersion] = useState<string | null>(null)
+  // Tabelas ARP/MAC da última execução de ping ou traceroute (usadas por show arp e show mac).
+  const [runtime, setRuntime] = useState<DeviceTables[] | null>(null)
 
   useEffect(() => {
     getEngineStatus()
@@ -221,6 +224,8 @@ export default function App() {
               onRename={rename}
               onSetAddress={setAddress}
               onConfigure={(t) => apply(() => t)}
+              runtime={runtime}
+              onRuntime={setRuntime}
               onRemove={() => deleteElements([device.id], [])}
             />
           ) : link ? (
@@ -239,7 +244,7 @@ export default function App() {
               </p>
             </>
           )}
-          <PingPanel topology={topology} />
+          <PingPanel topology={topology} onRuntime={setRuntime} />
         </aside>
       </div>
 
@@ -259,6 +264,8 @@ function DeviceProperties({
   onRename,
   onSetAddress,
   onConfigure,
+  runtime,
+  onRuntime,
   onRemove,
 }: {
   device: NonNullable<ReturnType<typeof findDevice>>
@@ -266,6 +273,8 @@ function DeviceProperties({
   onRename: (id: string, name: string) => void
   onSetAddress: (deviceId: string, portId: string, ip: string, prefixLen: number | undefined) => void
   onConfigure: (t: Topology) => void
+  runtime: DeviceTables[] | null
+  onRuntime: (t: DeviceTables[]) => void
   onRemove: () => void
 }) {
   const [draft, setDraft] = useState(device.name)
@@ -318,7 +327,14 @@ function DeviceProperties({
           )
         })}
       </ul>
-      <DeviceTerminal key={device.id} topology={topology} device={device} onTopology={onConfigure} />
+      <DeviceTerminal
+        key={device.id}
+        topology={topology}
+        device={device}
+        runtime={runtime}
+        onTopology={onConfigure}
+        onRuntime={onRuntime}
+      />
       <div className="actions">
         <button className="danger" onClick={onRemove}>
           Remover equipamento

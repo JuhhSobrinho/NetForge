@@ -1,7 +1,7 @@
 mod project_io;
 
 use netforge_engine::cli::{self, CliOutcome, CliSession};
-use netforge_engine::sim::{self, PingOutcome};
+use netforge_engine::sim::{self, DeviceTables, PingOutcome};
 use netforge_engine::topology::Topology;
 use serde::Serialize;
 use std::path::PathBuf;
@@ -60,8 +60,9 @@ fn cli_execute(
     device_id: String,
     session: CliSession,
     line: String,
+    runtime: Option<Vec<DeviceTables>>,
 ) -> Result<CliOutcome, String> {
-    cli::execute(&topology, &device_id, session, &line)
+    cli::execute(&topology, &device_id, session, &line, runtime.as_deref())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

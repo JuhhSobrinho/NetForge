@@ -53,7 +53,7 @@ Nenhuma fase começa antes do gate da anterior ser cumprido.
 - Fila de eventos, relógio virtual, interfaces, Ethernet, ARP, IPv4, ICMP.
 - Primeiro cenário de referência com PCAP.
 
-### Fase 4 — Equipamentos e CLI (em andamento: roteamento e CLI de configuração feitos; faltam show arp, show mac address-table, traceroute e histórico do terminal)
+### Fase 4 — Equipamentos e CLI (concluída em 2026-11-18, com limitações: histórico do terminal se perde ao trocar de equipamento; tabelas refletem a última execução)
 - Switch (MAC learning), router (rotas estáticas), PCs, parser de CLI.
 - Os 10 comandos P0 de FEATURES.md §5.
 

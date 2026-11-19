@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
 import { pickCapturePath } from '../project/fileActions'
+import type { DeviceTables } from '../cli/engine'
 import type { Topology } from '../topology/model'
 import { exportPcap, runPing, type LogKind, type PingOutcome } from './engine'
 
@@ -14,7 +15,13 @@ const KIND_LABEL: Record<LogKind, string> = {
   info: 'info',
 }
 
-export function PingPanel({ topology }: { topology: Topology }) {
+export function PingPanel({
+  topology,
+  onRuntime,
+}: {
+  topology: Topology
+  onRuntime: (t: DeviceTables[]) => void
+}) {
   const hosts = useMemo(
     () => topology.devices.filter((d) => (d.kind === 'pc' || d.kind === 'server') && d.ports[0]?.ip !== undefined),
     [topology],
@@ -37,6 +44,7 @@ export function PingPanel({ topology }: { topology: Topology }) {
     try {
       const result = await runPing(topology, source, target, count)
       setOutcome(result)
+      onRuntime(result.tables)
       setError(result.error)
     } catch (e) {
       setOutcome(null)

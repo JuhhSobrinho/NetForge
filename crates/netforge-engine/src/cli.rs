@@ -5,7 +5,7 @@
 //! O motor não guarda sessão: o frontend envia a topologia atual, o modo e a linha digitada,
 //! e recebe a saída, o novo modo e, se houve configuração, a topologia alterada.
 
-use crate::sim::run_ping;
+use crate::sim::{run_ping, run_traceroute, DeviceTables};
 use crate::topology::{netmask, Device, DeviceKind, StaticRoute, Topology};
 use serde::{Deserialize, Serialize};
 use std::net::Ipv4Addr;
@@ -45,17 +45,25 @@ pub struct CliOutcome {
     pub topology: Option<Topology>,
     /// Verdadeiro quando a linha foi rejeitada (saída começa com "%").
     pub error: bool,
+    /// Tabelas ARP/MAC após um ping ou traceroute; o frontend guarda e envia de volta.
+    pub runtime: Option<Vec<DeviceTables>>,
 }
 
 /// Executa uma linha da CLI no equipamento `device_id`.
-pub fn execute(t: &Topology, device_id: &str, session: CliSession, line: &str) -> Result<CliOutcome, String> {
+pub fn execute(
+    t: &Topology,
+    device_id: &str,
+    session: CliSession,
+    line: &str,
+    runtime: Option<&[DeviceTables]>,
+) -> Result<CliOutcome, String> {
     let index = t
         .devices
         .iter()
         .position(|d| d.id == device_id)
         .ok_or_else(|| "equipamento não existe".to_string())?;
     let dev = &t.devices[index];
-    let mut ctx = Ctx { topology: t, index, session, output: Vec::new(), changed: None, error: false };
+    let mut ctx = Ctx { topology: t, index, session, output: Vec::new(), changed: None, error: false, runtime, runtime_update: None };
     let line = line.trim();
     if !line.is_empty() {
         if let Err(e) = ctx.dispatch(line) {
@@ -70,6 +78,7 @@ pub fn execute(t: &Topology, device_id: &str, session: CliSession, line: &str) -
         prompt,
         topology: ctx.changed,
         error: ctx.error,
+        runtime: ctx.runtime_update,
     })
 }
 
@@ -94,6 +103,8 @@ struct Ctx<'a> {
     output: Vec<String>,
     changed: Option<Topology>,
     error: bool,
+    runtime: Option<&'a [DeviceTables]>,
+    runtime_update: Option<Vec<DeviceTables>>,
 }
 
 impl Ctx<'_> {
@@ -128,6 +139,9 @@ impl Ctx<'_> {
             }
             ["show", "ip", "interface", "brief"] => return self.show_interfaces(),
             ["show", "ip", "route"] => return self.show_routes(),
+            ["show", "arp"] => return self.show_arp(),
+            ["show", "mac", "address-table"] => return self.show_mac(),
+            ["traceroute", ..] => return self.traceroute(&args),
             ["ping", ..] => return self.ping(&args),
             _ => {}
         }
@@ -340,12 +354,86 @@ impl Ctx<'_> {
         Ok(())
     }
 
+    fn runtime_tables(&self) -> Option<DeviceTables> {
+        let id = self.device().id.clone();
+        self.runtime.and_then(|rt| rt.iter().find(|t| t.device_id == id).cloned())
+    }
+
+    fn show_arp(&mut self) -> Result<(), String> {
+        let Some(tables) = self.runtime_tables() else {
+            self.output.push("(sem dados: execute um ping ou traceroute antes)".into());
+            return Ok(());
+        };
+        self.output.push(format!("{:<16} {:<18} {}", "Address", "HardwareAddr", "Interface"));
+        if tables.arp.is_empty() {
+            self.output.push("(tabela vazia)".into());
+        }
+        for e in &tables.arp {
+            self.output.push(format!("{:<16} {:<18} {}", e.address, e.mac, e.port));
+        }
+        Ok(())
+    }
+
+    fn show_mac(&mut self) -> Result<(), String> {
+        if self.device().kind != DeviceKind::Switch {
+            return Err("este equipamento não tem tabela MAC".into());
+        }
+        let Some(tables) = self.runtime_tables() else {
+            self.output.push("(sem dados: execute um ping antes)".into());
+            return Ok(());
+        };
+        self.output.push(format!("{:<18} {}", "MacAddress", "Port"));
+        if tables.mac_table.is_empty() {
+            self.output.push("(tabela vazia)".into());
+        }
+        for m in &tables.mac_table {
+            self.output.push(format!("{:<18} {}", m.mac, m.port));
+        }
+        Ok(())
+    }
+
+    fn traceroute(&mut self, args: &[&str]) -> Result<(), String> {
+        if args.len() != 2 {
+            return Err(unknown(&args.join(" ")));
+        }
+        let outcome = run_traceroute(self.topology, &self.device().id, args[1], 16)?;
+        for h in &outcome.hops {
+            let line = match &h.address {
+                Some(a) => {
+                    let rtt = h.rtt_us.map(|r| format!("{:.2} ms", r as f64 / 1000.0)).unwrap_or_default();
+                    let note = h
+                        .note
+                        .as_deref()
+                        .filter(|n| n.contains("inalcançável") || n.contains("tempo"))
+                        .map(|n| format!(" ({n})"))
+                        .unwrap_or_default();
+                    format!("{:>2}  {:<15} {}{}", h.ttl, a, rtt, note)
+                }
+                None => format!("{:>2}  *", h.ttl),
+            };
+            self.output.push(line);
+        }
+        if let Some(e) = &outcome.error {
+            self.output.push(format!("% {e}"));
+            self.error = true;
+        }
+        let summary = if outcome.reached {
+            format!("Destino alcançado em {} saltos", outcome.hops.len())
+        } else {
+            "Destino não alcançado".to_string()
+        };
+        self.output.push(summary);
+        self.runtime_update = Some(outcome.tables.clone());
+        Ok(())
+    }
+
     fn ping(&mut self, args: &[&str]) -> Result<(), String> {
         if args.len() != 2 {
             return Err(unknown(&args.join(" ")));
         }
         let target = args[1];
         let outcome = run_ping(self.topology, &self.device().id, target, PING_COUNT)?;
+        self.runtime_update = Some(outcome.tables.clone());
         for r in &outcome.replies {
             self.output.push(format!(
                 "Resposta de {}: icmp_seq={} tempo={:.2} ms",
@@ -435,7 +523,7 @@ mod tests {
     }
 
     fn run(t: &Topology, dev: &str, s: CliSession, line: &str) -> CliOutcome {
-        execute(t, dev, s, line).unwrap()
+        execute(t, dev, s, line, None).unwrap()
     }
 
     fn enter_interface(t: &Topology, dev: &str, port: &str) -> CliSession {
@@ -552,5 +640,56 @@ mod tests {
         t.devices[1].ports[0].prefix_len = Some(24);
         let out = run(&t, "a", CliSession::default(), "ping 10.0.1.1");
         assert!(out.output.iter().any(|l| l == "Taxa de sucesso: 4 de 4 respostas"), "{:?}", out.output);
+    }
+
+    #[test]
+    fn show_arp_without_runtime_says_there_is_no_data() {
+        let t = topo();
+        let out = execute(&t, "a", CliSession::default(), "show arp", None).unwrap();
+        assert!(out.output[0].contains("sem dados"), "{:?}", out.output);
+        assert!(out.runtime.is_none());
+    }
+
+    #[test]
+    fn ping_then_show_arp_uses_the_returned_tables() {
+        let mut t = topo();
+        t.devices[0].ports[0].ip = Some("10.0.1.10".into());
+        t.devices[0].ports[0].prefix_len = Some(24);
+        t.devices[0].gateway = Some("10.0.1.1".into());
+        t.devices[1].ports[0].ip = Some("10.0.1.1".into());
+        t.devices[1].ports[0].prefix_len = Some(24);
+        let ping = execute(&t, "a", CliSession::default(), "ping 10.0.1.1", None).unwrap();
+        let tables = ping.runtime.clone().expect("ping devolve tabelas");
+        let out = execute(&t, "a", CliSession::default(), "show arp", Some(&tables)).unwrap();
+        assert!(out.output.iter().any(|l| l.contains("10.0.1.1")), "{:?}", out.output);
+    }
+
+    #[test]
+    fn mac_table_is_only_for_switches() {
+        let t = topo();
+        let out = execute(&t, "a", CliSession::default(), "show mac address-table", None).unwrap();
+        assert!(out.error);
+        assert!(out.output[0].contains("não tem tabela MAC"));
+    }
+
+    #[test]
+    fn traceroute_prints_hops_and_returns_tables() {
+        let mut t = topo();
+        t.devices[0].ports[0].ip = Some("10.0.1.10".into());
+        t.devices[0].ports[0].prefix_len = Some(24);
+        t.devices[0].gateway = Some("10.0.1.1".into());
+        t.devices[1].ports[0].ip = Some("10.0.1.1".into());
+        t.devices[1].ports[0].prefix_len = Some(24);
+        let out = execute(&t, "a", CliSession::default(), "traceroute 10.0.1.1", None).unwrap();
+        assert!(out.output.iter().any(|l| l.contains("Destino alcançado em 1 saltos")), "{:?}", out.output);
+        assert!(out.runtime.is_some());
+    }
+
+    #[test]
+    fn parse_mask_is_used_for_static_routes_removal() {
+        let mut t = topo();
+        t.devices[1].routes.push(crate::topology::StaticRoute { network: "10.0.9.0".into(), prefix_len: 24, next_hop: "10.0.1.2".into() });
+        let out = execute(&t, "r", CliSession { mode: Mode::Config, interface: None }, "no ip route 10.0.9.0 255.255.255.0", None).unwrap();
+        assert!(out.topology.unwrap().devices[1].routes.is_empty());
     }
 }

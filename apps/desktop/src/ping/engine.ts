@@ -1,6 +1,7 @@
 // Chamadas ao motor de simulação (Fase 3). Os tipos espelham o JSON de netforge_engine::sim.
 import { invoke } from '@tauri-apps/api/core'
 import type { Topology } from '../topology/model'
+import type { DeviceTables } from '../cli/engine'
 
 export type LogKind = 'tx' | 'rx' | 'learn' | 'flood' | 'forward' | 'drop' | 'info'
 
@@ -25,6 +26,8 @@ export interface PingOutcome {
   logTruncated: boolean
   /** Bytes do arquivo PCAP (cabeçalho global + quadros da interface de origem). */
   pcap: number[]
+  /** Tabelas ARP e MAC ao final da execução. */
+  tables: DeviceTables[]
 }
 
 /** Executa o ping no motor. Rejeita com uma mensagem legível se a entrada for inválida. */
