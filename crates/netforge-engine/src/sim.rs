@@ -17,6 +17,7 @@ use crate::icmp::{
     encode_error, IcmpEcho, IcmpError, CODE_NET_UNREACHABLE, CODE_TTL_IN_TRANSIT, TYPE_DEST_UNREACHABLE,
     TYPE_ECHO_REPLY, TYPE_ECHO_REQUEST, TYPE_TIME_EXCEEDED,
 };
+use crate::dns;
 use crate::dhcp::{DhcpMessage, CLIENT_PORT, MSG_ACK, MSG_DISCOVER, MSG_OFFER, MSG_REQUEST, OP_REPLY as DHCP_REPLY, OP_REQUEST as DHCP_REQUEST, SERVER_PORT};
 use crate::ipv4::{Ipv4Packet, DEFAULT_TTL, PROTO_ICMP};
 use crate::udp::{UdpDatagram, PROTO_UDP};
@@ -255,6 +256,7 @@ struct Route {
 
 struct Runtime {
     pool: Option<Pool>,
+    dns_records: Vec<(String, Ipv4Addr)>,
     id: String,
     port_ids: Vec<String>,
     name: String,
@@ -293,6 +295,7 @@ struct Simulation {
     pcap: PcapWriter,
     echo: Option<EchoState>,
     dhcp: Option<DhcpClient>,
+    dns: Option<DnsClient>,
 }
 
 /// Executa `count` echo requests de `source_id` para `target` e devolve o resultado.
@@ -484,6 +487,11 @@ impl Simulation {
                 let via: Ipv4Addr = gw.parse().map_err(|_| "gateway inválido")?;
                 routes.push(Route { net: 0, prefix: 0, via });
             }
+            let mut dns_records = Vec::new();
+            for r in &d.dns_records {
+                let ip: Ipv4Addr = r.ip.parse().map_err(|_| "registro DNS inválido")?;
+                dns_records.push((dns::normalize_name(&r.name)?, ip));
+            }
             let pool = match &d.dhcp_pool {
                 Some(p) => Some(build_pool(p, &ifaces)?),
                 None => None,
@@ -499,6 +507,7 @@ impl Simulation {
                 mac_table: HashMap::new(),
                 routes,
                 pool,
+                dns_records,
             });
         }
         Ok(Simulation {
@@ -516,6 +525,7 @@ impl Simulation {
             pcap: PcapWriter::new(),
             echo: None,
             dhcp: None,
+            dns: None,
         })
     }
 
@@ -833,11 +843,11 @@ impl Simulation {
             return;
         }
         if self.is_local(dev, pkt.dst) {
-            if pkt.protocol != PROTO_ICMP {
-                self.push_log(self.now, dev, LogKind::Drop, format!("protocolo IP {} não suportado", pkt.protocol));
-                return;
+            match pkt.protocol {
+                PROTO_ICMP => self.icmp_rx(dev, &pkt),
+                PROTO_UDP => self.udp_local_rx(dev, &pkt),
+                other => self.push_log(self.now, dev, LogKind::Drop, format!("protocolo IP {other} não suportado")),
             }
-            self.icmp_rx(dev, &pkt);
             return;
         }
         if self.devices[dev].kind != DeviceKind::Router {
@@ -1167,6 +1177,129 @@ impl Simulation {
     }
 }
 
+/// Cliente DNS em andamento: aguarda a resposta da consulta.
+struct DnsClient {
+    dev: usize,
+    src_port: u16,
+    id: u16,
+    name: String,
+    /// `None`: sem resposta; `Some(None)`: NXDOMAIN; `Some(Some(ip))`: endereço.
+    answer: Option<Option<Ipv4Addr>>,
+}
+
+/// Resultado de uma consulta DNS feita por um equipamento.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DnsOutcome {
+    pub name: String,
+    pub address: Option<String>,
+    pub nxdomain: bool,
+    pub error: Option<String>,
+    pub log: Vec<LogEntry>,
+    pub log_truncated: bool,
+}
+
+/// Consulta `name` no servidor de nomes configurado em `client_id` (`ip name-server`).
+pub fn run_dns(topology: &Topology, client_id: &str, name: &str) -> Result<DnsOutcome, String> {
+    topology.validate()?;
+    let name = dns::normalize_name(name)?;
+    let dev = topology
+        .devices
+        .iter()
+        .position(|d| d.id == client_id)
+        .ok_or_else(|| "equipamento não existe".to_string())?;
+    if !topology.devices[dev].kind.is_host() {
+        return Err("somente PCs e servidores fazem consultas DNS".into());
+    }
+    let server_text = topology.devices[dev]
+        .name_server
+        .clone()
+        .ok_or_else(|| "nenhum servidor de nomes configurado (ip name-server)".to_string())?;
+    let server: Ipv4Addr = server_text.parse().map_err(|_| "servidor de nomes inválido".to_string())?;
+    let mut sim = Simulation::build(topology)?;
+    let (port, _) = sim.lookup(dev, server).ok_or("sem rota até o servidor de nomes")?;
+    let (src_ip, _) = sim.devices[dev].ifaces[port].addr.ok_or("interface sem endereço IP")?;
+    let id = 0x1d2e;
+    let src_port = 49_153;
+    sim.dns = Some(DnsClient { dev, src_port, id, name: name.clone(), answer: None });
+    let query = dns::encode_query(id, &name)?;
+    sim.send_udp(dev, src_ip, src_port, server, dns::PORT, query)?;
+    sim.run_until_dns_done();
+    let answer = sim.dns.take().and_then(|c| c.answer);
+    let (address, nxdomain, error) = match answer {
+        Some(Some(ip)) => (Some(ip.to_string()), false, None),
+        Some(None) => (None, true, None),
+        None => (None, false, Some("sem resposta do servidor de nomes".to_string())),
+    };
+    Ok(DnsOutcome { name, address, nxdomain, error, log: sim.log, log_truncated: sim.log_truncated })
+}
+
+impl Simulation {
+    fn run_until_dns_done(&mut self) {
+        loop {
+            if self.dns.as_ref().is_some_and(|c| c.answer.is_some()) {
+                break;
+            }
+            let Some(p) = self.queue.pop() else { break };
+            self.events += 1;
+            if self.events > MAX_EVENTS {
+                self.storm = true;
+                break;
+            }
+            self.now = p.at;
+            self.deliver(p.to, p.bytes);
+        }
+    }
+
+    /// Envia uma mensagem UDP unicast pela rota do equipamento.
+    fn send_udp(&mut self, dev: usize, src: Ipv4Addr, src_port: u16, dst: Ipv4Addr, dst_port: u16, payload: Vec<u8>) -> Result<(), String> {
+        let udp = UdpDatagram { src_port, dst_port, payload }.encode();
+        let pkt = self.new_ipv4(src, dst, PROTO_UDP, udp);
+        self.send_ip(dev, pkt)
+    }
+
+    /// UDP recebido para um endereço local: servidor DNS (53) ou resposta ao cliente DNS.
+    fn udp_local_rx(&mut self, dev: usize, pkt: &Ipv4Packet) {
+        let Ok(udp) = UdpDatagram::decode(&pkt.payload) else {
+            self.push_log(self.now, dev, LogKind::Drop, "datagrama UDP inválido".into());
+            return;
+        };
+        if udp.dst_port == dns::PORT {
+            self.dns_server_rx(dev, pkt.dst, pkt.src, udp.src_port, &udp.payload);
+            return;
+        }
+        let is_client_port = self.dns.as_ref().is_some_and(|c| c.dev == dev && c.src_port == udp.dst_port);
+        if is_client_port {
+            self.dns_client_rx(&udp.payload);
+            return;
+        }
+        self.push_log(self.now, dev, LogKind::Drop, format!("porta UDP {} fechada", udp.dst_port));
+    }
+
+    /// Servidor DNS: responde só se o equipamento tem registros configurados.
+    fn dns_server_rx(&mut self, dev: usize, local_ip: Ipv4Addr, client_ip: Ipv4Addr, client_port: u16, payload: &[u8]) {
+        if self.devices[dev].dns_records.is_empty() {
+            self.push_log(self.now, dev, LogKind::Drop, "porta 53 sem registros DNS".into());
+            return;
+        }
+        let Ok(dns::Message::Query { id, name }) = dns::decode(payload) else { return };
+        let answer = self.devices[dev].dns_records.iter().find(|(n, _)| *n == name).map(|(_, ip)| *ip);
+        let Ok(reply) = dns::encode_response(id, &name, answer) else { return };
+        if let Err(e) = self.send_udp(dev, local_ip, dns::PORT, client_ip, client_port, reply) {
+            self.push_log(self.now, dev, LogKind::Drop, e);
+        }
+    }
+
+    fn dns_client_rx(&mut self, payload: &[u8]) {
+        let Ok(dns::Message::Response { id, name, answer, rcode }) = dns::decode(payload) else { return };
+        if let Some(c) = self.dns.as_mut() {
+            if id == c.id && name == c.name && c.answer.is_none() {
+                c.answer = Some(if rcode == dns::RCODE_NXDOMAIN { None } else { answer });
+            }
+        }
+    }
+}
+
 /// Decodifica um quadro por camada. Retorna `None` se nem o Ethernet é válido.
 pub fn frame_info(bytes: &[u8]) -> Option<FrameInfo> {
     let frame = Frame::decode(bytes).ok()?;
@@ -1270,6 +1403,8 @@ mod tests {
             gateway: None,
             routes: Vec::new(),
             dhcp_pool: None,
+            name_server: None,
+            dns_records: Vec::new(),
         }
     }
 
@@ -1288,6 +1423,8 @@ mod tests {
             gateway: None,
             routes,
             dhcp_pool: None,
+            name_server: None,
+            dns_records: Vec::new(),
         }
     }
 
@@ -1665,5 +1802,49 @@ mod tests {
         };
         assert_eq!(allocate(&pool, [2, 0, 0, 0, 0, 1]), None);
         assert_eq!(allocate(&pool, [2, 0, 0, 0, 0, 9]), Some(Ipv4Addr::new(10, 0, 5, 100)));
+    }
+
+    /// Cliente com servidor de nomes 10.0.7.20; servidor com o registro web.lab -> 10.0.7.80.
+    fn dns_topology(with_records: bool) -> Topology {
+        let mut client = host("c", "10.0.7.10", 24, None);
+        client.name_server = Some("10.0.7.20".into());
+        let mut server = host("dns", "10.0.7.20", 24, None);
+        if with_records {
+            server.dns_records = vec![crate::topology::DnsRecord { name: "web.lab".into(), ip: "10.0.7.80".into() }];
+        }
+        topo(
+            vec![client, server, switch("sw")],
+            vec![link("l1", ("c", "p1"), ("sw", "p1")), link("l2", ("dns", "p1"), ("sw", "p2"))],
+        )
+    }
+
+    #[test]
+    fn dns_resolves_a_configured_record_through_a_switch() {
+        let out = run_dns(&dns_topology(true), "c", "WEB.lab").unwrap();
+        assert_eq!(out.address.as_deref(), Some("10.0.7.80"));
+        assert!(!out.nxdomain);
+        assert!(out.error.is_none());
+    }
+
+    #[test]
+    fn dns_unknown_name_is_nxdomain() {
+        let out = run_dns(&dns_topology(true), "c", "nada.lab").unwrap();
+        assert!(out.nxdomain);
+        assert!(out.address.is_none());
+    }
+
+    #[test]
+    fn dns_server_without_records_does_not_answer() {
+        let out = run_dns(&dns_topology(false), "c", "web.lab").unwrap();
+        assert!(out.address.is_none());
+        assert!(out.error.unwrap().contains("sem resposta do servidor de nomes"));
+    }
+
+    #[test]
+    fn dns_needs_a_name_server() {
+        let mut t = dns_topology(true);
+        t.devices[0].name_server = None;
+        let err = run_dns(&t, "c", "web.lab").unwrap_err();
+        assert!(err.contains("nenhum servidor de nomes"), "{err}");
     }
 }

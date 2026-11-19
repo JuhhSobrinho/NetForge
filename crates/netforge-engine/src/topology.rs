@@ -51,6 +51,14 @@ fn is_false(b: &bool) -> bool {
     !*b
 }
 
+/// Registro DNS de um servidor (`ip dns-record`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DnsRecord {
+    pub name: String,
+    pub ip: String,
+}
+
 /// Pool de um servidor DHCP: concede endereços de `start` a `end` na rede `network`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -89,6 +97,12 @@ pub struct Device {
     /// Pool DHCP de um servidor (`ip dhcp-pool`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dhcp_pool: Option<DhcpPool>,
+    /// Servidor de nomes de um host (`ip name-server`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name_server: Option<String>,
+    /// Registros DNS servidos pelo equipamento (`ip dns-record`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dns_records: Vec<DnsRecord>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -159,6 +173,19 @@ impl Topology {
                 for a in [&p.network, &p.start, &p.end, &p.gateway] {
                     a.parse::<Ipv4Addr>().map_err(|_| format!("endereço inválido no pool DHCP: {a}"))?;
                 }
+            }
+            if let Some(ns) = &d.name_server {
+                if !d.kind.is_host() {
+                    return Err(format!("servidor de nomes só é configurado em PCs e servidores: {}", d.name));
+                }
+                ns.parse::<Ipv4Addr>().map_err(|_| format!("servidor de nomes inválido: {ns}"))?;
+            }
+            if !d.dns_records.is_empty() && d.kind == DeviceKind::Switch {
+                return Err(format!("registros DNS não existem em switches: {}", d.name));
+            }
+            for r in &d.dns_records {
+                crate::dns::normalize_name(&r.name)?;
+                r.ip.parse::<Ipv4Addr>().map_err(|_| format!("IP inválido em registro DNS: {}", r.ip))?;
             }
             if !d.routes.is_empty() && d.kind != DeviceKind::Router {
                 return Err(format!("rotas estáticas só existem em roteadores: {}", d.name));
@@ -246,6 +273,8 @@ pub(crate) fn sample_pc(id: &str, ip: Option<&str>) -> Device {
         gateway: None,
         routes: Vec::new(),
         dhcp_pool: None,
+        name_server: None,
+        dns_records: Vec::new(),
     }
 }
 
@@ -269,6 +298,8 @@ mod tests {
                     gateway: None,
                     routes: Vec::new(),
                     dhcp_pool: None,
+                    name_server: None,
+                    dns_records: Vec::new(),
                 },
             ],
             links: vec![

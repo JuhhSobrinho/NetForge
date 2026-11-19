@@ -77,4 +77,5 @@ Ver também: [REVERSE_ENGINEERING.md](REVERSE_ENGINEERING.md), [TESTING_STRATEGY
 
 - **UDP (RFC 768):** implementado. Cabeçalho completo; checksum enviado como zero (permitido em IPv4). Serve de transporte para o DHCP.
 - **DHCP (RFC 2131):** implementado com escopo mínimo. Formato BOOTP com opções 1 (máscara), 3 (roteador), 50, 51, 53, 54. Fluxo DORA (Discover, Offer, Request, Ack) executado pela simulação; a concessão é gravada na interface como endereço estático. Limitações: só no mesmo domínio de broadcast (sem relay); o servidor precisa ter interface na sub-rede do pool; sem renovação de concessão.
-- **DNS, TCP reduzido e VLAN:** planejados, ainda não implementados.
+- **DNS (RFC 1035):** implementado com escopo mínimo: consultas tipo A, classe IN, sobre UDP porta 53. Servidor configurado com registros (ip dns-record); responde NXDOMAIN para nomes desconhecidos e fica sem resposta se não tiver registros. Sem cache, sem recursão, sem compressão de nomes na escrita.
+- **TCP reduzido e VLAN:** planejados, ainda não implementados.

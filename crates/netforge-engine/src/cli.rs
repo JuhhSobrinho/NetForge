@@ -5,7 +5,7 @@
 //! O motor não guarda sessão: o frontend envia a topologia atual, o modo e a linha digitada,
 //! e recebe a saída, o novo modo e, se houve configuração, a topologia alterada.
 
-use crate::sim::{run_dhcp, run_ping, run_traceroute, DeviceTables};
+use crate::sim::{run_dhcp, run_dns, run_ping, run_traceroute, DeviceTables};
 use crate::topology::{netmask, Device, DeviceKind, StaticRoute, Topology};
 use serde::{Deserialize, Serialize};
 use std::net::Ipv4Addr;
@@ -142,6 +142,7 @@ impl Ctx<'_> {
             ["show", "arp"] => return self.show_arp(),
             ["show", "mac", "address-table"] => return self.show_mac(),
             ["traceroute", ..] => return self.traceroute(&args),
+            ["nslookup", ..] => return self.nslookup(&args),
             ["ping", ..] => return self.ping(&args),
             _ => {}
         }
@@ -191,6 +192,9 @@ impl Ctx<'_> {
             ["no", "ip", "route", ..] => self.remove_route(args, line),
             ["ip", "default-gateway", ip] => self.set_gateway(Some(*ip)),
             ["ip", "dhcp-pool", ..] => self.dhcp_pool(args, line),
+            ["ip", "name-server", ip] => self.name_server(Some(ip)),
+            ["no", "ip", "name-server"] => self.name_server(None),
+            ["ip", "dns-record", name, ip] => self.dns_record(name, ip),
             ["no", "ip", "default-gateway"] => self.set_gateway(None),
             _ => Err(unknown(line)),
         }
@@ -243,6 +247,49 @@ impl Ctx<'_> {
             .ok_or("interface inexistente")?;
         f(p);
         self.save(t)
+    }
+
+    fn name_server(&mut self, ip: Option<&str>) -> Result<(), String> {
+        if !self.device().kind.is_host() {
+            return Err("servidor de nomes só é configurado em PCs e servidores".into());
+        }
+        let mut t = self.working();
+        if let Some(s) = ip {
+            s.parse::<Ipv4Addr>().map_err(|_| format!("endereço inválido: {s}"))?;
+        }
+        t.devices[self.index].name_server = ip.map(String::from);
+        self.save(t)
+    }
+
+    fn dns_record(&mut self, name: &str, ip: &str) -> Result<(), String> {
+        if self.device().kind == DeviceKind::Switch {
+            return Err("registros DNS não existem em switches".into());
+        }
+        let name = crate::dns::normalize_name(name)?;
+        ip.parse::<Ipv4Addr>().map_err(|_| format!("endereço inválido: {ip}"))?;
+        let mut t = self.working();
+        let records = &mut t.devices[self.index].dns_records;
+        records.retain(|r| r.name != name);
+        records.push(crate::topology::DnsRecord { name, ip: ip.to_string() });
+        self.save(t)
+    }
+
+    /// `nslookup <nome>`: consulta o servidor de nomes configurado.
+    fn nslookup(&mut self, args: &[&str]) -> Result<(), String> {
+        if args.len() != 2 {
+            return Err(unknown(&args.join(" ")));
+        }
+        let outcome = run_dns(self.topology, &self.device().id, args[1])?;
+        match (&outcome.address, outcome.nxdomain, &outcome.error) {
+            (Some(ip), _, _) => self.output.push(format!("{} -> {}", outcome.name, ip)),
+            (None, true, _) => self.output.push(format!("{}: NXDOMAIN (nome não existe)", outcome.name)),
+            (None, _, Some(e)) => {
+                self.output.push(format!("% {e}"));
+                self.error = true;
+            }
+            _ => {}
+        }
+        Ok(())
     }
 
     fn dhcp_pool(&mut self, args: &[&str], line: &str) -> Result<(), String> {
@@ -557,6 +604,8 @@ mod tests {
             gateway: None,
             routes: Vec::new(),
             dhcp_pool: None,
+            name_server: None,
+            dns_records: Vec::new(),
         }
     }
 
@@ -768,5 +817,26 @@ mod tests {
         let s = CliSession { mode: Mode::Interface, interface: Some("p1".into()) };
         let out = execute(&t2, "a", s, "ip address dhcp", None).unwrap();
         assert!(out.error);
+    }
+
+    #[test]
+    fn dns_commands_configure_records_and_resolve() {
+        let mut t = topo();
+        t.devices[1].ports[0].ip = Some("10.0.1.1".into());
+        t.devices[1].ports[0].prefix_len = Some(24);
+        let s = run(&t, "r", CliSession { mode: Mode::Config, interface: None }, "ip dns-record web.lab 10.0.1.80");
+        let t2 = s.topology.expect("registro altera a topologia");
+        assert_eq!(t2.devices[1].dns_records.len(), 1);
+        let s = run(&t2, "a", CliSession { mode: Mode::Config, interface: None }, "ip name-server 10.0.1.1");
+        let t3 = s.topology.expect("servidor de nomes altera a topologia");
+        assert_eq!(t3.devices[0].name_server.as_deref(), Some("10.0.1.1"));
+    }
+
+    #[test]
+    fn nslookup_without_name_server_reports_an_error() {
+        let t = topo();
+        let out = run(&t, "a", CliSession::default(), "nslookup web.lab");
+        assert!(out.error);
+        assert!(out.output[0].starts_with("% "), "{:?}", out.output);
     }
 }

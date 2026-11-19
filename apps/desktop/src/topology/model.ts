@@ -18,6 +18,12 @@ export interface Port {
   shutdown?: boolean
 }
 
+/** Registro DNS servido por um equipamento (`ip dns-record`). */
+export interface DnsRecord {
+  name: string
+  ip: string
+}
+
 /** Pool de um servidor DHCP (`ip dhcp-pool`). */
 export interface DhcpPool {
   network: string
@@ -97,6 +103,10 @@ export interface Device {
   routes?: StaticRoute[]
   /** Pool DHCP de um roteador ou servidor. */
   dhcpPool?: DhcpPool
+  /** Servidor de nomes de um PC ou servidor (`ip name-server`). */
+  nameServer?: string
+  /** Registros DNS servidos pelo equipamento (`ip dns-record`). */
+  dnsRecords?: DnsRecord[]
 }
 
 export interface PortRef {
@@ -288,6 +298,18 @@ export function parseTopology(json: string): Result<Topology> {
       if (!isValidIpv4(String(p?.network)) || !isValidIpv4(String(p?.start)) || !isValidIpv4(String(p?.end)) || !isValidIpv4(String(p?.gateway)))
         return fail('Pool DHCP com endereço inválido.')
       if (!Number.isInteger(p.prefixLen) || p.prefixLen < 0 || p.prefixLen > 32) return fail('Prefixo do pool DHCP inválido.')
+    }
+    if (d.nameServer !== undefined) {
+      if (d.kind !== 'pc' && d.kind !== 'server') return fail('Servidor de nomes só existe em PCs e servidores.')
+      if (!isValidIpv4(String(d.nameServer))) return fail(`Servidor de nomes inválido: ${String(d.nameServer)}.`)
+    }
+    if (d.dnsRecords !== undefined) {
+      if (!Array.isArray(d.dnsRecords)) return fail('Registros DNS inválidos.')
+      if (d.dnsRecords.length > 0 && d.kind === 'switch') return fail('Registros DNS não existem em switches.')
+      for (const r of d.dnsRecords) {
+        if (typeof r?.name !== 'string' || !/^[a-z0-9-]+(\.[a-z0-9-]+)*$/.test(r.name.toLowerCase()) || !isValidIpv4(String(r.ip)))
+          return fail('Registro DNS inválido.')
+      }
     }
     if (d.routes !== undefined) {
       if (!Array.isArray(d.routes)) return fail('Rotas inválidas.')
