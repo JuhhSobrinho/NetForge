@@ -25,6 +25,7 @@ import {
 import { createStressTopology } from './topology/stress'
 import { PingPanel } from './ping/PingPanel'
 import type { DeviceTables } from './cli/engine'
+import type { ActiveLink } from './ping/engine'
 import { DeviceTerminal } from './cli/DeviceTerminal'
 import './App.css'
 
@@ -51,6 +52,8 @@ export default function App() {
   const [engineVersion, setEngineVersion] = useState<string | null>(null)
   // Tabelas ARP/MAC da última execução de ping ou traceroute (usadas por show arp e show mac).
   const [runtime, setRuntime] = useState<DeviceTables[] | null>(null)
+  // Enlace destacado no canvas pela linha do tempo do ping.
+  const [activeLink, setActiveLink] = useState<ActiveLink | null>(null)
 
   useEffect(() => {
     getEngineStatus()
@@ -213,6 +216,7 @@ export default function App() {
           onMoveDevices={moveDevices}
           onConnectPorts={connectPorts}
           onDelete={deleteElements}
+          activeLink={activeLink}
         />
 
         <aside className="properties" aria-label="Propriedades">
@@ -244,7 +248,7 @@ export default function App() {
               </p>
             </>
           )}
-          <PingPanel topology={topology} onRuntime={setRuntime} />
+          <PingPanel topology={topology} onRuntime={setRuntime} onActiveLink={setActiveLink} />
         </aside>
       </div>
 

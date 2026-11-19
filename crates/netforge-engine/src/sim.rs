@@ -57,8 +57,67 @@ pub enum LogKind {
 pub struct LogEntry {
     pub time_us: u64,
     pub device: String,
+    pub device_id: String,
     pub kind: LogKind,
     pub detail: String,
+    /// Quadro decodificado, presente nas transmissões.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub frame: Option<FrameInfo>,
+    /// Enlace percorrido pela transmissão (origem e destino por equipamento e porta).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub link: Option<LinkRef>,
+}
+
+/// Campos de um quadro por camada, para a inspeção de pacotes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FrameInfo {
+    pub protocol: String,
+    pub src_mac: String,
+    pub dst_mac: String,
+    pub ethertype: u16,
+    pub bytes: usize,
+    pub arp: Option<ArpInfo>,
+    pub ipv4: Option<Ipv4Info>,
+    pub icmp: Option<IcmpInfo>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArpInfo {
+    pub op: String,
+    pub sender_mac: String,
+    pub sender_ip: String,
+    pub target_mac: String,
+    pub target_ip: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Ipv4Info {
+    pub src: String,
+    pub dst: String,
+    pub ttl: u8,
+    pub id: u16,
+    pub protocol: u8,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IcmpInfo {
+    pub kind: String,
+    pub code: u8,
+    pub id: u16,
+    pub seq: u16,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkRef {
+    pub from_device: String,
+    pub from_port: String,
+    pub to_device: String,
+    pub to_port: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -516,6 +575,17 @@ impl Simulation {
         Ok(())
     }
 
+    fn link_ref(&self, from: Endpoint, to: Endpoint) -> LinkRef {
+        let f = &self.devices[from.dev];
+        let t = &self.devices[to.dev];
+        LinkRef {
+            from_device: f.id.clone(),
+            from_port: f.port_ids.get(from.port).cloned().unwrap_or_default(),
+            to_device: t.id.clone(),
+            to_port: t.port_ids.get(to.port).cloned().unwrap_or_default(),
+        }
+    }
+
     fn next_seq(&mut self) -> u64 {
         self.counter += 1;
         self.counter
@@ -527,7 +597,8 @@ impl Simulation {
             return;
         }
         let name = self.devices[device].name.clone();
-        self.log.push(LogEntry { time_us, device: name, kind, detail });
+        let device_id = self.devices[device].id.clone();
+        self.log.push(LogEntry { time_us, device: name, device_id, kind, detail, frame: None, link: None });
     }
 
     fn new_ipv4(&mut self, src: Ipv4Addr, dst: Ipv4Addr, protocol: u8, payload: Vec<u8>) -> Ipv4Packet {
@@ -590,7 +661,16 @@ impl Simulation {
             self.pcap.record(self.now, &bytes);
         }
         let detail = describe(&bytes);
+        let frame = frame_info(&bytes);
+        let link = self.link_ref(from, to);
+        let before = self.log.len();
         self.push_log(self.now, from.dev, kind, detail);
+        if self.log.len() > before {
+            if let Some(last) = self.log.last_mut() {
+                last.frame = frame;
+                last.link = Some(link);
+            }
+        }
         let seq = self.next_seq();
         let at = self.now + LINK_LATENCY_US;
         self.queue.push(Pending { at, seq, to, bytes });
@@ -848,6 +928,54 @@ impl Simulation {
             }
         }
     }
+}
+
+/// Decodifica um quadro por camada. Retorna `None` se nem o Ethernet é válido.
+pub fn frame_info(bytes: &[u8]) -> Option<FrameInfo> {
+    let frame = Frame::decode(bytes).ok()?;
+    let mut info = FrameInfo {
+        protocol: "Ethernet".into(),
+        src_mac: mac_text(&frame.src),
+        dst_mac: mac_text(&frame.dst),
+        ethertype: frame.ethertype,
+        bytes: bytes.len(),
+        arp: None,
+        ipv4: None,
+        icmp: None,
+    };
+    match frame.ethertype {
+        ETHERTYPE_ARP => {
+            if let Ok(a) = ArpPacket::decode(&frame.payload) {
+                info.protocol = "ARP".into();
+                info.arp = Some(ArpInfo {
+                    op: if a.op == OP_REQUEST { "request" } else { "reply" }.into(),
+                    sender_mac: mac_text(&a.sender_mac),
+                    sender_ip: a.sender_ip.to_string(),
+                    target_mac: mac_text(&a.target_mac),
+                    target_ip: a.target_ip.to_string(),
+                });
+            }
+        }
+        ETHERTYPE_IPV4 => {
+            if let Ok(p) = Ipv4Packet::decode(&frame.payload) {
+                info.protocol = "IPv4".into();
+                info.ipv4 = Some(Ipv4Info { src: p.src.to_string(), dst: p.dst.to_string(), ttl: p.ttl, id: p.id, protocol: p.protocol });
+                if p.protocol == PROTO_ICMP {
+                    if let Ok(e) = IcmpEcho::decode(&p.payload) {
+                        info.protocol = "ICMP".into();
+                        let kind = if e.kind == TYPE_ECHO_REQUEST { "echo request" } else { "echo reply" };
+                        info.icmp = Some(IcmpInfo { kind: kind.into(), code: 0, id: e.id, seq: e.seq });
+                    } else if let Ok(e) = IcmpError::decode(&p.payload) {
+                        info.protocol = "ICMP".into();
+                        let kind = if e.kind == TYPE_DEST_UNREACHABLE { "destino inalcançável" } else { "tempo excedido" };
+                        info.icmp = Some(IcmpInfo { kind: kind.into(), code: e.code, id: 0, seq: 0 });
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    Some(info)
 }
 
 /// Resumo legível de um quadro, usado no log e na inspeção.
@@ -1195,5 +1323,31 @@ mod tests {
         assert_eq!(sw.mac_table.len(), 2);
         let ports: Vec<&str> = sw.mac_table.iter().map(|m| m.port.as_str()).collect();
         assert!(ports.contains(&"p1") && ports.contains(&"p2"));
+    }
+
+    #[test]
+    fn transmissions_carry_decoded_frames_and_links() {
+        let out = run_ping(&two_pcs_and_switch(), "a", "10.0.0.2", 1).unwrap();
+        let first = out.log.iter().find(|e| e.kind == LogKind::Tx).unwrap();
+        let frame = first.frame.as_ref().expect("tx sem quadro");
+        assert_eq!(frame.protocol, "ARP");
+        assert_eq!(frame.arp.as_ref().unwrap().op, "request");
+        assert_eq!(first.device_id, "a");
+        let link = first.link.as_ref().expect("tx sem enlace");
+        assert_eq!((link.from_device.as_str(), link.from_port.as_str()), ("a", "p1"));
+        assert_eq!((link.to_device.as_str(), link.to_port.as_str()), ("sw", "p1"));
+        let icmp = out.log.iter().filter_map(|e| e.frame.as_ref()).find(|f| f.protocol == "ICMP").unwrap();
+        assert_eq!(icmp.icmp.as_ref().unwrap().kind, "echo request");
+        assert_eq!(icmp.ipv4.as_ref().unwrap().ttl, DEFAULT_TTL);
+    }
+
+    #[test]
+    fn frame_info_decodes_arp_and_rejects_garbage() {
+        let req = ArpPacket { op: OP_REQUEST, sender_mac: [2, 0, 0, 0, 0, 1], sender_ip: Ipv4Addr::new(10, 0, 0, 1), target_mac: [0; 6], target_ip: Ipv4Addr::new(10, 0, 0, 2) };
+        let bytes = Frame { dst: BROADCAST, src: [2, 0, 0, 0, 0, 1], ethertype: ETHERTYPE_ARP, payload: req.encode() }.encode();
+        let info = frame_info(&bytes).unwrap();
+        assert_eq!(info.protocol, "ARP");
+        assert_eq!(info.arp.unwrap().target_ip, "10.0.0.2");
+        assert!(frame_info(&[0u8; 5]).is_none());
     }
 }

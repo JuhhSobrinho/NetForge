@@ -35,7 +35,9 @@ export function mergeEdges(prev: Edge[], next: Edge[]): Edge[] {
       old.source === e.source &&
       old.target === e.target &&
       old.sourceHandle === e.sourceHandle &&
-      old.targetHandle === e.targetHandle
+      old.targetHandle === e.targetHandle &&
+      old.className === e.className &&
+      old.label === e.label
     )
       return old
     if (old) return { ...old, ...e, selected: old.selected }

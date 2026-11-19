@@ -146,3 +146,11 @@ Todas as decisões abaixo estão **propostas** até a aprovação do responsáve
 ### Atualização (mesma fase)
 
 As tabelas ARP e MAC passaram a ser devolvidas pelo motor ao final de cada ping ou traceroute (`tables`). O frontend guarda a última execução e a envia de volta aos comandos `show arp` e `show mac address-table`. O motor continua sem estado entre chamadas. Consequência: as tabelas mostram a última execução, não um estado contínuo.
+
+## ADR-018 — Linha do tempo sobre o log completo (refina ADR-005 para a visualização)
+
+- **Status:** aceita (2026-11-18)
+- **Contexto:** a Fase 5 pede voltar e avançar na simulação. ADR-005 previa snapshot + replay.
+- **Decisão:** o motor devolve o log completo de cada execução (com quadro decodificado e enlace por transmissão). O "voltar" move o cursor dentro desse log; não há restauração de estado de rede no frontend.
+- **Motivo:** a execução é determinística e de tamanho limitado (MAX_LOG_ENTRIES), então o log completo já contém tudo que a visualização precisa. Snapshots só seriam necessários se o motor passasse a rodar sessões longas.
+- **Consequências:** o voltar mostra o que já aconteceu, não reexecuta nada. Se o motor ganhar simulação contínua (fora do escopo atual), a decisão deve ser revista.

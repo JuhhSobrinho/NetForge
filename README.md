@@ -2,7 +2,7 @@
 
 Simulador de redes para Windows, com motor próprio, interface moderna e foco educacional.
 
-> **Status: Fase 4 concluída (com limitações).** Roteadores encaminham pacotes entre sub-redes com rotas estáticas, e cada equipamento tem uma CLI com show arp, show mac address-table, show ip route e traceroute. As tabelas refletem a última execução de ping ou traceroute. Ver [docs/PROTOCOLS.md](docs/PROTOCOLS.md).
+> **Status: Fase 5 implementada.** A linha do tempo do ping mostra cada transmissão, destaca o enlace percorrido e inspeciona o pacote por camada. Fase 4 concluída (com limitações). Roteadores encaminham pacotes entre sub-redes com rotas estáticas, e cada equipamento tem uma CLI com show arp, show mac address-table, show ip route e traceroute. As tabelas refletem a última execução de ping ou traceroute. Ver [docs/PROTOCOLS.md](docs/PROTOCOLS.md).
 
 ## Objetivo
 

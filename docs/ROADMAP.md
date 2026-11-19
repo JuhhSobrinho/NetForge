@@ -57,7 +57,7 @@ Nenhuma fase começa antes do gate da anterior ser cumprido.
 - Switch (MAC learning), router (rotas estáticas), PCs, parser de CLI.
 - Os 10 comandos P0 de FEATURES.md §5.
 
-### Fase 5 — Simulação visual
+### Fase 5 — Simulação visual (implementada em 2026-11-18: linha do tempo, animação de enlace e inspeção; sem exportação de sessão e sem animação por pacote individual)
 - Animação de pacotes, timeline, Packet Inspector, histórico.
 
 ### Fase 6 — Protocolos adicionais

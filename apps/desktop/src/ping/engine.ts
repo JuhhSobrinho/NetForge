@@ -1,15 +1,61 @@
-// Chamadas ao motor de simulação (Fase 3). Os tipos espelham o JSON de netforge_engine::sim.
+// Chamadas ao motor de simulação. Os tipos espelham o JSON de netforge_engine::sim.
 import { invoke } from '@tauri-apps/api/core'
 import type { Topology } from '../topology/model'
 import type { DeviceTables } from '../cli/engine'
 
 export type LogKind = 'tx' | 'rx' | 'learn' | 'flood' | 'forward' | 'drop' | 'info'
 
+export interface ArpInfo {
+  op: string
+  senderMac: string
+  senderIp: string
+  targetMac: string
+  targetIp: string
+}
+
+export interface Ipv4Info {
+  src: string
+  dst: string
+  ttl: number
+  id: number
+  protocol: number
+}
+
+export interface IcmpInfo {
+  kind: string
+  code: number
+  id: number
+  seq: number
+}
+
+/** Quadro decodificado por camada. */
+export interface FrameInfo {
+  protocol: string
+  srcMac: string
+  dstMac: string
+  ethertype: number
+  bytes: number
+  arp?: ArpInfo | null
+  ipv4?: Ipv4Info | null
+  icmp?: IcmpInfo | null
+}
+
+/** Enlace percorrido por uma transmissão (equipamento e porta de cada ponta). */
+export interface LinkRef {
+  fromDevice: string
+  fromPort: string
+  toDevice: string
+  toPort: string
+}
+
 export interface LogEntry {
   timeUs: number
   device: string
+  deviceId: string
   kind: LogKind
   detail: string
+  frame?: FrameInfo | null
+  link?: LinkRef | null
 }
 
 export interface PingReply {
@@ -28,6 +74,11 @@ export interface PingOutcome {
   pcap: number[]
   /** Tabelas ARP e MAC ao final da execução. */
   tables: DeviceTables[]
+}
+
+/** Enlace destacado no canvas enquanto a linha do tempo está nele. */
+export interface ActiveLink extends LinkRef {
+  protocol: string
 }
 
 /** Executa o ping no motor. Rejeita com uma mensagem legível se a entrada for inválida. */

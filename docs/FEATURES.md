@@ -78,6 +78,8 @@ Prioridade P0 para cabeçalhos e histórico de encaminhamento (Fase 5).
 
 Play, pause, step forward (P0); step backward (P1, depende de histórico completo); velocidade (P0); filtros por protocolo (P1); histórico de eventos (P0); animação de pacotes (P0); seleção de evento (P0). Cada evento tem ID rastreável.
 
+**Estado (Fase 5):** implementado — quadros decodificados por camada, linha do tempo com play, pausa, avançar, voltar, velocidade e filtro por protocolo, e enlace animado na transmissão atual. Ainda não: marcador deslizando pelo enlace por pacote, e histórico entre execuções.
+
 ## 8. Project Manager
 
 | Funcionalidade | Prioridade | Fase |

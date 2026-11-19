@@ -15,7 +15,8 @@ import '@xyflow/react/dist/style.css'
 import { DeviceNode, type DeviceFlowNode } from './DeviceNode'
 import { handleToPortId } from './handles'
 import { applyEdgeSelection, applyNodeSelection, mergeEdges, mergeNodes } from './merge'
-import type { PortRef, Topology } from '../topology/model'
+import type { Link, PortRef, Topology } from '../topology/model'
+import type { ActiveLink } from '../ping/engine'
 
 export type Selection = { deviceId: string | null; linkId: string | null }
 
@@ -26,6 +27,8 @@ interface Props {
   onMoveDevices: (moves: { id: string; x: number; y: number }[]) => void
   onConnectPorts: (a: PortRef, b: PortRef) => void
   onDelete: (deviceIds: string[], linkIds: string[]) => void
+  /** Enlace percorrido pela transmissão atual da linha do tempo (destacado e animado). */
+  activeLink?: ActiveLink | null
 }
 
 const nodeTypes = { device: DeviceNode }
@@ -48,15 +51,29 @@ function toNodes(t: Topology): DeviceFlowNode[] {
   }))
 }
 
-function toEdges(t: Topology): Edge[] {
-  return t.links.map((l) => ({
-    id: l.id,
-    source: l.from.deviceId,
-    sourceHandle: `${l.from.portId}-out`,
-    target: l.to.deviceId,
-    targetHandle: `${l.to.portId}-in`,
-    selected: false,
-  }))
+function isActiveLink(l: Link, a: ActiveLink | null | undefined): boolean {
+  if (!a) return false
+  const f = `${l.from.deviceId}:${l.from.portId}`
+  const t = `${l.to.deviceId}:${l.to.portId}`
+  const af = `${a.fromDevice}:${a.fromPort}`
+  const at = `${a.toDevice}:${a.toPort}`
+  return (f === af && t === at) || (f === at && t === af)
+}
+
+function toEdges(t: Topology, active: ActiveLink | null | undefined): Edge[] {
+  return t.links.map((l) => {
+    const on = isActiveLink(l, active)
+    return {
+      id: l.id,
+      source: l.from.deviceId,
+      sourceHandle: `${l.from.portId}-out`,
+      target: l.to.deviceId,
+      targetHandle: `${l.to.portId}-in`,
+      selected: false,
+      className: on ? 'edge--active' : undefined,
+      label: on && active ? active.protocol : undefined,
+    }
+  })
 }
 
 export function TopologyCanvas({
@@ -66,16 +83,17 @@ export function TopologyCanvas({
   onMoveDevices,
   onConnectPorts,
   onDelete: onDeleteElements,
+  activeLink,
 }: Props) {
   const [nodes, setNodes, onNodesChange] = useNodesState<DeviceFlowNode>(toNodes(topology))
-  const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>(toEdges(topology))
+  const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>(toEdges(topology, activeLink))
 
   // Modelo mudou (edição, undo/redo, abrir arquivo): atualiza só o que mudou.
   // Os objetos antigos são preservados para não perder medidas internas do React Flow.
   useEffect(() => {
     setNodes((prev) => mergeNodes(prev, toNodes(topology)))
-    setEdges((prev) => mergeEdges(prev, toEdges(topology)))
-  }, [topology, setNodes, setEdges])
+    setEdges((prev) => mergeEdges(prev, toEdges(topology, activeLink)))
+  }, [topology, activeLink, setNodes, setEdges])
 
   // Seleção mudou: só os flags `selected` são atualizados.
   useEffect(() => {

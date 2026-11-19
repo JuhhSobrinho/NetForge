@@ -2,35 +2,29 @@ import { useMemo, useState } from 'react'
 import { pickCapturePath } from '../project/fileActions'
 import type { DeviceTables } from '../cli/engine'
 import type { Topology } from '../topology/model'
-import { exportPcap, runPing, type LogKind, type PingOutcome } from './engine'
-
-const MAX_LOG_LINES = 500
-const KIND_LABEL: Record<LogKind, string> = {
-  tx: 'TX',
-  rx: 'RX',
-  learn: 'aprende',
-  flood: 'inunda',
-  forward: 'encaminha',
-  drop: 'descarta',
-  info: 'info',
-}
+import { Timeline } from '../sim/Timeline'
+import { exportPcap, runPing, type ActiveLink, type PingOutcome } from './engine'
 
 export function PingPanel({
   topology,
   onRuntime,
+  onActiveLink,
 }: {
   topology: Topology
   onRuntime: (t: DeviceTables[]) => void
+  onActiveLink: (link: ActiveLink | null) => void
 }) {
   const hosts = useMemo(
     () => topology.devices.filter((d) => (d.kind === 'pc' || d.kind === 'server') && d.ports[0]?.ip !== undefined),
     [topology],
   )
+  const names = useMemo(() => Object.fromEntries(topology.devices.map((d) => [d.id, d.name])), [topology])
   const [sourceId, setSourceId] = useState<string>('')
   const [target, setTarget] = useState('')
   const [count, setCount] = useState(4)
   const [busy, setBusy] = useState(false)
   const [outcome, setOutcome] = useState<PingOutcome | null>(null)
+  const [runId, setRunId] = useState(0)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
 
@@ -41,9 +35,11 @@ export function PingPanel({
     setBusy(true)
     setError(null)
     setNotice(null)
+    onActiveLink(null)
     try {
       const result = await runPing(topology, source, target, count)
       setOutcome(result)
+      setRunId((n) => n + 1)
       onRuntime(result.tables)
       setError(result.error)
     } catch (e) {
@@ -65,8 +61,6 @@ export function PingPanel({
       setError(`Não foi possível exportar: ${String(e)}`)
     }
   }
-
-  const lines = outcome?.log.slice(0, MAX_LOG_LINES) ?? []
 
   return (
     <section className="ping" aria-label="Teste de ping">
@@ -123,22 +117,13 @@ export function PingPanel({
             {outcome.replies.length > 0 &&
               ` · RTT ${outcome.replies.map((r) => (r.rttUs / 1000).toFixed(2)).join(' / ')} ms`}
           </p>
-          <h3 className="ping__subtitle">Eventos</h3>
-          <ol className="ping__log">
-            {lines.map((e, i) => (
-              <li key={i}>
-                <div className="ping__meta">
-                  <span className="muted">{(e.timeUs / 1000).toFixed(2)} ms</span>
-                  <strong>{KIND_LABEL[e.kind]}</strong>
-                  <span>{e.device}</span>
-                </div>
-                <div className="ping__detail">{e.detail}</div>
-              </li>
-            ))}
-          </ol>
-          {(outcome.log.length > MAX_LOG_LINES || outcome.logTruncated) && (
-            <p className="muted">Mostrando {lines.length} de {outcome.log.length} eventos.</p>
-          )}
+          <Timeline
+            key={runId}
+            entries={outcome.log}
+            names={names}
+            onActiveLink={onActiveLink}
+          />
+          {outcome.logTruncated && <p className="muted">O log foi truncado no limite de eventos.</p>}
         </>
       )}
     </section>
