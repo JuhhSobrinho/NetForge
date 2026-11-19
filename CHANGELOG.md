@@ -5,6 +5,7 @@ Formato baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/). 
 ## [Não lançado]
 
 ### Adicionado
+- Fase 3: motor de simulação em Rust com modelo de topologia e validação; Ethernet II, ARP, IPv4 e ICMP echo (escopo mínimo); switch com aprendizado de MAC; ping com tempo virtual (1000 µs por link); captura PCAP da interface de origem; comandos `run_ping` e `export_pcap`; endereço IPv4 e prefixo por porta; painel de teste de ping. Ver ADR-016.
 - Fase 2: canvas com React Flow 13; equipamentos PC, switch, roteador e servidor com portas; ligações entre portas com validação (porta única, sem laço no mesmo equipamento); renomear, remover equipamento e link; undo/redo (100 passos); salvar e abrir projeto JSON com `schemaVersion` 1 via diálogo nativo; ADR-014 e ADR-015.
 - Fase 1: workspace Rust (`Cargo.toml` na raiz) com o crate `crates/netforge-engine`; app Tauri 2 em `apps/desktop` (React 19, TypeScript, Vite 8); comando IPC `engine_status` validado por testes Rust e Vitest; CSP restritiva e capability mínima (`core:default`).
 - Crates de projeto, dispositivos, protocolos, persistência e plugins ainda não foram criados: entram nas fases em que forem necessários.

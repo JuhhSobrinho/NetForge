@@ -10,6 +10,12 @@ export async function pickSavePath(suggestedName: string): Promise<string | null
   return path.toLowerCase().endsWith('.json') ? path : `${path}.json`
 }
 
+export async function pickCapturePath(suggestedName: string): Promise<string | null> {
+  const path = await save({ defaultPath: suggestedName, filters: [{ name: 'Captura PCAP', extensions: ['pcap'] }] })
+  if (!path) return null
+  return path.toLowerCase().endsWith('.pcap') ? path : `${path}.pcap`
+}
+
 export async function pickOpenPath(): Promise<string | null> {
   const result = await open({ multiple: false, directory: false, filters: FILTERS })
   return typeof result === 'string' ? result : null

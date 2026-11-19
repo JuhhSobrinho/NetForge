@@ -10,6 +10,60 @@ export type DeviceKind = 'pc' | 'switch' | 'router' | 'server'
 export interface Port {
   id: string
   name: string
+  /** Endereço IPv4 da interface (Fase 3). Ausente = sem endereço. */
+  ip?: string
+  /** Comprimento do prefixo (0–32). Só existe junto com `ip`. */
+  prefixLen?: number
+}
+
+const IPV4_RE = /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/
+
+export function isValidIpv4(s: string): boolean {
+  return IPV4_RE.test(s)
+}
+
+/** Valida o par (ip, prefixo). Os dois campos vêm juntos ou não vêm. */
+export function validateAddress(ip: string | undefined, prefixLen: number | undefined): Result<true> {
+  if (ip === undefined && prefixLen === undefined) return ok(true)
+  if (ip === undefined || prefixLen === undefined) return fail('Endereço e máscara devem ser informados juntos.')
+  if (!isValidIpv4(ip)) return fail(`Endereço IPv4 inválido: ${ip}.`)
+  if (!Number.isInteger(prefixLen) || prefixLen < 0 || prefixLen > 32)
+    return fail('O prefixo deve ser um inteiro entre 0 e 32.')
+  return ok(true)
+}
+
+/** Define (ou remove, com ip vazio) o endereço de uma porta. */
+export function setPortAddress(
+  t: Topology,
+  deviceId: string,
+  portId: string,
+  ip: string,
+  prefixLen: number | undefined,
+): Result<Topology> {
+  const device = findDevice(t, deviceId)
+  if (!device) return fail('Equipamento não encontrado.')
+  if (!device.ports.some((p) => p.id === portId)) return fail('Porta não encontrada.')
+  const trimmed = ip.trim()
+  const address = trimmed === '' ? { ip: undefined, prefixLen: undefined } : { ip: trimmed, prefixLen }
+  const check = validateAddress(address.ip, address.prefixLen)
+  if (!check.ok) return check
+  return ok({
+    ...t,
+    devices: t.devices.map((d) =>
+      d.id !== deviceId
+        ? d
+        : {
+            ...d,
+            ports: d.ports.map((p) => {
+              if (p.id !== portId) return p
+              const { ip: _ip, prefixLen: _p, ...rest } = p
+              void _ip
+              void _p
+              return address.ip === undefined ? rest : { ...rest, ip: address.ip, prefixLen: address.prefixLen }
+            }),
+          },
+    ),
+  })
 }
 
 export interface Device {
@@ -195,6 +249,8 @@ export function parseTopology(json: string): Result<Topology> {
       if (!p || typeof p.id !== 'string' || portIds.has(p.id))
         return fail('Porta com id inválido ou duplicado.')
       portIds.add(p.id)
+      const addr = validateAddress(p.ip, p.prefixLen)
+      if (!addr.ok) return fail(addr.error)
     }
     if (typeof d.x !== 'number' || typeof d.y !== 'number') return fail('Posição de equipamento inválida.')
     deviceIds.add(d.id)

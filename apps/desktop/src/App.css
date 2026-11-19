@@ -62,7 +62,7 @@ button.danger {
 /* Área principal: canvas + painel */
 .workspace {
   display: grid;
-  grid-template-columns: 1fr 280px;
+  grid-template-columns: 1fr 340px;
   min-height: 0;
 }
 
@@ -198,4 +198,96 @@ button.danger {
 
 .status--ok {
   color: var(--ok);
+}
+
+/* Endereçamento por porta */
+.port-row {
+  display: block;
+}
+
+.port-row__head {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.port-row__address {
+  display: flex;
+  gap: 6px;
+  margin: 6px 0 2px;
+}
+
+.port-row__address input {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  font-size: 12px;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--canvas);
+  color: var(--text);
+}
+
+.port-row__address .port-row__prefix {
+  flex: 0 0 56px;
+}
+
+/* Painel de ping */
+.ping {
+  margin-top: 18px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.ping select,
+.ping input {
+  width: 100%;
+  box-sizing: border-box;
+  font: inherit;
+  font-size: 12px;
+  padding: 5px 7px;
+  margin-top: 2px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--canvas);
+  color: var(--text);
+}
+
+.ping__result {
+  margin-top: 10px;
+  font-size: 12px;
+}
+
+.ping__subtitle {
+  font-size: 13px;
+  margin: 12px 0 4px;
+}
+
+.ping__log {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-height: 320px;
+  overflow: auto;
+  font-size: 11px;
+  font-family: ui-monospace, Consolas, monospace;
+}
+
+.ping__log li {
+  margin-bottom: 3px;
+  word-break: break-word;
+}
+
+.ping__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.ping__detail {
+  color: var(--text);
+  margin-left: 0;
+  word-break: break-word;
 }

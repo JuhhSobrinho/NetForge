@@ -1,9 +1,13 @@
 [package]
 name = "netforge-engine"
-description = "NetForge simulation engine (Phase 1: foundation only, no network behavior yet)"
+description = "NetForge simulation engine: topology model, Ethernet/ARP/IPv4/ICMP, event queue, PCAP export"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+serde = { version = "1.0", features = ["derive"] }
+
+[dev-dependencies]
+serde_json = "1.0"

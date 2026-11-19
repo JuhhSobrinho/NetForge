@@ -2,7 +2,7 @@
 
 Simulador de redes para Windows, com motor próprio, interface moderna e foco educacional.
 
-> **Status: Fase 2 concluída.** O app permite montar topologia (PC, switch, roteador, servidor), ligar portas, renomear, desfazer/refazer e salvar/abrir JSON. Ainda não há simulação: nenhum protocolo de rede está implementado (ver [docs/PROTOCOLS.md](docs/PROTOCOLS.md)).
+> **Status: Fase 3 concluída (com ressalvas).** O app monta topologia com endereços IPv4 e roda ping entre dois PCs ligados por switch, com log de eventos e exportação PCAP. Implementados com escopo mínimo: Ethernet, ARP, IPv4 (sem roteamento) e ICMP echo. Roteadores ainda não encaminham pacotes (Fase 4). Ver [docs/PROTOCOLS.md](docs/PROTOCOLS.md).
 
 ## Objetivo
 

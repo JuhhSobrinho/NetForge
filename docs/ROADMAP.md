@@ -49,7 +49,7 @@ Nenhuma fase começa antes do gate da anterior ser cumprido.
 - Canvas, dispositivos, portas, conexões, propriedades, salvamento JSON.
 - Decisão final sobre React Flow: **mantido** (ADR-003). Medição com 200 nós e 300 links: pan, zoom e arraste a 60 FPS.
 
-### Fase 3 — Motor de simulação
+### Fase 3 — Motor de simulação (concluída em 2026-11-18, com ressalvas: validação no Wireshark pendente)
 - Fila de eventos, relógio virtual, interfaces, Ethernet, ARP, IPv4, ICMP.
 - Primeiro cenário de referência com PCAP.
 

@@ -1,7 +1,17 @@
-//! Núcleo do simulador NetForge.
+//! Núcleo do simulador NetForge (Fase 3).
 //!
-//! Fase 1: apenas a fundação. Nenhum protocolo, dispositivo ou evento de rede
-//! está implementado ainda (ver docs/PROTOCOLS.md e docs/ROADMAP.md).
+//! Módulos: `topology` (modelo e validação), `ethernet`, `arp`, `ipv4`, `icmp`, `checksum`
+//! (protocolos), `sim` (motor de eventos e ping), `pcap` (exportação para o Wireshark).
+//! Ver docs/PROTOCOLS.md para o status de cada protocolo.
+
+pub mod arp;
+pub mod checksum;
+pub mod ethernet;
+pub mod icmp;
+pub mod ipv4;
+pub mod pcap;
+pub mod sim;
+pub mod topology;
 
 /// Versão do motor, vinda do `Cargo.toml` do workspace.
 pub fn engine_version() -> &'static str {

@@ -17,11 +17,13 @@ import {
   removeLink,
   renameDevice,
   serializeTopology,
+  setPortAddress,
   type DeviceKind,
   type PortRef,
   type Topology,
 } from './topology/model'
 import { createStressTopology } from './topology/stress'
+import { PingPanel } from './ping/PingPanel'
 import './App.css'
 
 const newId = () => crypto.randomUUID()
@@ -125,6 +127,13 @@ export default function App() {
     ok('Nome atualizado.')
   }
 
+  const setAddress = (deviceId: string, portId: string, ip: string, prefixLen: number | undefined) => {
+    const result = setPortAddress(topology, deviceId, portId, ip, prefixLen)
+    if (!result.ok) return fail(result.error)
+    apply(() => result.value)
+    ok(ip.trim() === '' ? 'Endereço removido.' : 'Endereço atualizado.')
+  }
+
   const newProject = () => {
     if (topology.devices.length > 0 && !window.confirm('Criar um novo projeto? O projeto atual não está salvo.'))
       return
@@ -209,6 +218,7 @@ export default function App() {
               device={device}
               topology={topology}
               onRename={rename}
+              onSetAddress={setAddress}
               onRemove={() => deleteElements([device.id], [])}
             />
           ) : link ? (
@@ -227,6 +237,7 @@ export default function App() {
               </p>
             </>
           )}
+          <PingPanel topology={topology} />
         </aside>
       </div>
 
@@ -244,11 +255,13 @@ function DeviceProperties({
   device,
   topology,
   onRename,
+  onSetAddress,
   onRemove,
 }: {
   device: NonNullable<ReturnType<typeof findDevice>>
   topology: Topology
   onRename: (id: string, name: string) => void
+  onSetAddress: (deviceId: string, portId: string, ip: string, prefixLen: number | undefined) => void
   onRemove: () => void
 }) {
   const [draft, setDraft] = useState(device.name)
@@ -283,9 +296,19 @@ function DeviceProperties({
             status = `ligada a ${otherDevice?.name ?? '?'} · ${other.portId}`
           }
           return (
-            <li key={port.id}>
-              <span>{port.name}</span>
-              <span className="muted">{status}</span>
+            <li key={port.id} className="port-row">
+              <div className="port-row__head">
+                <span>{port.name}</span>
+                <span className="muted">{status}</span>
+              </div>
+              <PortAddressEditor
+                key={`${device.id}:${port.id}:${port.ip ?? ''}:${port.prefixLen ?? ''}`}
+                deviceId={device.id}
+                portId={port.id}
+                ip={port.ip}
+                prefixLen={port.prefixLen}
+                onSet={onSetAddress}
+              />
             </li>
           )
         })}
@@ -296,6 +319,58 @@ function DeviceProperties({
         </button>
       </div>
     </>
+  )
+}
+
+function PortAddressEditor({
+  deviceId,
+  portId,
+  ip,
+  prefixLen,
+  onSet,
+}: {
+  deviceId: string
+  portId: string
+  ip: string | undefined
+  prefixLen: number | undefined
+  onSet: (deviceId: string, portId: string, ip: string, prefixLen: number | undefined) => void
+}) {
+  const [ipDraft, setIpDraft] = useState(ip ?? '')
+  const [prefixDraft, setPrefixDraft] = useState(prefixLen === undefined ? '' : String(prefixLen))
+
+  const commit = () => {
+    const trimmedIp = ipDraft.trim()
+    const trimmedPrefix = prefixDraft.trim()
+    const prefix = trimmedPrefix === '' ? undefined : Number(trimmedPrefix)
+    if (trimmedIp === (ip ?? '') && prefix === prefixLen) return
+    onSet(deviceId, portId, trimmedIp, prefix)
+  }
+
+  return (
+    <div className="port-row__address">
+      <input
+        aria-label={`Endereço IPv4 da ${portId}`}
+        placeholder="IPv4, ex.: 10.0.0.1"
+        value={ipDraft}
+        onChange={(e) => setIpDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
+        }}
+      />
+      <input
+        aria-label={`Prefixo da ${portId}`}
+        className="port-row__prefix"
+        placeholder="/24"
+        inputMode="numeric"
+        value={prefixDraft}
+        onChange={(e) => setPrefixDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
+        }}
+      />
+    </div>
   )
 }
 

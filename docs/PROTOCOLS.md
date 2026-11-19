@@ -15,9 +15,9 @@ Fonte primária de comportamento: RFCs do IETF. O comportamento observado no Pac
 
 | Protocolo | Referência | Fase | Status | Escopo inicial | Fora do escopo inicial |
 |---|---|---|---|---|---|
-| Ethernet II | IEEE 802.3 / formato EtherType | 3 | não implementado | Quadro com MAC origem/destino, EtherType, FCS simulado (sem CRC real obrigatório) | Auto-negociação, jumbo frames |
-| ARP | RFC 826 | 3 | não implementado | Request/reply, cache com timeout | Gratuitous ARP, proxy ARP |
-| Switch MAC learning | Comportamento de switch (didático) | 4 | não implementado | Aprendizado, encaminhamento, flood em desconhecido | Aging detalhado, port security |
+| Ethernet II | IEEE 802.3 / formato EtherType | 3 | implementado (escopo mínimo) | Quadro com MAC origem/destino e EtherType; padding até 60 bytes; sem FCS | Auto-negociação, jumbo frames, FCS/CRC |
+| ARP | RFC 826 | 3 | implementado (escopo mínimo) | Request/reply para Ethernet/IPv4; cache sem envelhecimento (timeout não implementado) | Gratuitous ARP, proxy ARP, timeout de cache |
+| Switch MAC learning | Comportamento de switch (didático) | 3 (antecipado) | implementado (escopo mínimo) | Aprendizado pelo MAC de origem, encaminhamento, inundação para destinos desconhecidos e broadcast | Envelhecimento da tabela (aging), port security, STP (laço gera erro explícito) |
 | VLAN (802.1Q) | IEEE 802.1Q | 6 | não implementado | Tag, access/trunk básicos | Q-in-Q, GVRP |
 | STP | IEEE 802.1D | 6+ | não implementado | — | Versão completa, RSTP/MSTP |
 
@@ -25,8 +25,8 @@ Fonte primária de comportamento: RFCs do IETF. O comportamento observado no Pac
 
 | Protocolo | Referência | Fase | Status | Escopo inicial | Fora do escopo inicial |
 |---|---|---|---|---|---|
-| IPv4 | RFC 791 | 3 | não implementado | Cabeçalho, TTL, checksum, roteamento de host e router | Fragmentação completa (avaliar), opções |
-| ICMP (IPv4) | RFC 792 | 3 | não implementado | Echo request/reply, Time Exceeded, Destination Unreachable | Redirect, Router Advertisement |
+| IPv4 | RFC 791 | 3 | implementado (escopo mínimo) | Cabeçalho de 20 bytes com checksum, TTL 64, DF; entrega na mesma sub-rede | Opções, fragmentação, roteamento entre sub-redes (Fase 4) |
+| ICMP (IPv4) | RFC 792 | 3 | implementado (escopo mínimo) | Echo request/reply (tipos 0 e 8) | Time Exceeded, Destination Unreachable, Redirect |
 | Roteamento estático | — | 4 | não implementado | Tabela, longest prefix match | Rotas default múltiplas com métricas |
 | IPv6 | RFC 8200 | 6+ | não implementado | Cabeçalho, ICMPv6 echo | NDP completo, SLAAC (planejado depois) |
 | RIP | RFC 2453 (RIPv2) | 7+ | não implementado | — | Tudo (etapa posterior) |
@@ -57,6 +57,10 @@ Observação: TCP completo é grande. Proposta: começar com handshake e transfe
 - Um protocolo só recebe o status `implementado` quando: (a) testes de referência passam, (b) há cenário de regressão em `tests/scenarios/`, e (c) quando aplicável, o PCAP gerado é comparado com captura de referência no Wireshark.
 - Representações visuais sem motor não aparecem na lista de protocolos suportados.
 - Cada item "fora do escopo" deve constar na interface ou na ajuda quando o usuário tentar usá-lo.
+
+## Status após a Fase 3
+
+Implementados com escopo mínimo: Ethernet II, ARP (request/reply), switch com aprendizado de MAC, IPv4 (sem roteamento) e ICMP echo. Validados por testes de vetores (checksum RFC 1071, layouts de ARP e IPv4) e por cenário ponta a ponta (PC - switch - PC, RTT de 8 ms no primeiro ping e 4 ms nos seguintes). **Ainda não validado no Wireshark**: exige instalação aprovada.
 
 ## Protocolos no cenário inicial (Fase 3)
 

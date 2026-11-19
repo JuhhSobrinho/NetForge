@@ -1,5 +1,7 @@
 mod project_io;
 
+use netforge_engine::sim::{self, PingOutcome};
+use netforge_engine::topology::Topology;
 use serde::Serialize;
 use std::path::PathBuf;
 
@@ -32,6 +34,24 @@ fn open_project_file(path: String) -> Result<String, String> {
     project_io::read_project(&path)
 }
 
+/// Executa um ping no motor. O frontend envia a topologia atual; o motor valida tudo.
+#[tauri::command]
+fn run_ping(
+    topology: Topology,
+    source_device_id: String,
+    target_ip: String,
+    count: u8,
+) -> Result<PingOutcome, String> {
+    sim::run_ping(&topology, &source_device_id, &target_ip, count)
+}
+
+/// Salva a captura PCAP de um ping no caminho escolhido pelo usuário.
+#[tauri::command]
+fn export_pcap(path: String, bytes: Vec<u8>) -> Result<(), String> {
+    let path: PathBuf = project_io::validate_path_with(&path, "pcap")?;
+    project_io::write_capture(&path, &bytes)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
   tauri::Builder::default()
@@ -39,7 +59,9 @@ pub fn run() {
     .invoke_handler(tauri::generate_handler![
         engine_status,
         save_project_file,
-        open_project_file
+        open_project_file,
+        run_ping,
+        export_pcap
     ])
     .setup(|app| {
       if cfg!(debug_assertions) {

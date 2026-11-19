@@ -108,7 +108,7 @@ Todas as decisões abaixo estão **propostas** até a aprovação do responsáve
 
 ## ADR-014 — Topologia editada no frontend na Fase 2; regras de rede migram para o Rust na Fase 3
 
-- **Status:** aceita (2026-11-18)
+- **Status:** parcialmente substituída por ADR-016 (2026-11-18)
 - **Contexto:** a Fase 2 é de canvas e edição. O motor Rust ainda não tem modelo de dispositivos, e mover cada edição por IPC antes disso acrescentaria latência e código sem benefício de simulação.
 - **Decisão:** o modelo de topologia (dispositivos, portas, links), as regras de conexão e a validação de JSON ficam em `apps/desktop/src/topology/model.ts`, como funções puras testadas com Vitest. Essa lógica **não contém comportamento de rede**. Na Fase 3, quando o motor precisar do grafo, o modelo passa para `crates/netforge-engine` e o frontend passa a consumi-lo via IPC.
 - **Alternativas:** modelo no Rust desde já (mais fiel ao ADR-002, porém mais trabalho sem ganho imediato); modelo só no React (rejeitado: mistura estado com componentes).
@@ -120,3 +120,14 @@ Todas as decisões abaixo estão **propostas** até a aprovação do responsáve
 - **Decisão:** o caminho é escolhido com o plugin `tauri-plugin-dialog` (diálogos nativos). A leitura e a escrita passam por dois comandos Rust (`open_project_file`, `save_project_file`) que exigem caminho absoluto, extensão `.json` e tamanho máximo de 5 MiB. Não há plugin `fs`: a permissão de arquivo fica restrita aos comandos do app e às duas permissões do diálogo (`dialog:allow-open`, `dialog:allow-save`).
 - **Motivo:** menor superfície de permissão (princípio já aplicado na Fase 1). O frontend não consegue ler caminhos arbitrários do disco.
 - **Consequências:** o caminho vindo do diálogo é confiável por ser escolhido pelo usuário, mas a validação continua no Rust.
+
+## ADR-016 — Motor recebe um snapshot da topologia; edição continua no frontend (substitui parcialmente ADR-014)
+
+- **Status:** aceita (2026-11-18)
+- **Contexto:** ADR-014 previa migrar o modelo para o Rust na Fase 3. Na implementação, o motor precisa de um modelo próprio para simular, então ele ganhou um modelo e um validador. A edição (undo/redo, sincronização com o React Flow) continua no frontend.
+- **Decisão:** cada ping envia a topologia atual ao motor (`run_ping`). O motor valida o snapshot com as mesmas regras do frontend e simula. O motor não guarda estado entre chamadas: cada execução parte de uma simulação nova, então o ARP e a tabela MAC não persistem.
+- **Consequências:**
+  - As regras de validação existem em duas implementações (TypeScript e Rust). Qualquer divergência aparece em testes; a migração completa da edição para o Rust fica para a Fase 4, quando o CLI precisar alterar a topologia.
+  - Latência de link fixa de 1000 µs e sem perda de pacotes. Esses parâmetros são constantes do motor, não configuráveis por enquanto.
+  - Captura PCAP feita na interface da origem (quadros transmitidos e recebidos). Não há captura por link, como um sniffer de rede faria.
+  - Laço de camada 2 sem STP é interrompido por limite de eventos (20 000) e reportado como erro.
