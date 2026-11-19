@@ -16,6 +16,10 @@ export interface Port {
   prefixLen?: number
   /** Interface administrativamente desligada (`shutdown` na CLI). */
   shutdown?: boolean
+  /** Modo VLAN de uma porta de switch. */
+  vlanMode?: 'access' | 'trunk'
+  /** VLAN de acesso (1–4094). */
+  vlan?: number
 }
 
 /** Registro DNS servido por um equipamento (`ip dns-record`). */
@@ -286,6 +290,12 @@ export function parseTopology(json: string): Result<Topology> {
       const addr = validateAddress(p.ip, p.prefixLen)
       if (!addr.ok) return fail(addr.error)
       if (p.shutdown !== undefined && typeof p.shutdown !== 'boolean') return fail('Estado de shutdown inválido.')
+      if (p.vlanMode !== undefined || p.vlan !== undefined) {
+        if (d.kind !== 'switch') return fail('Configuração de VLAN só existe em switches.')
+        if (p.vlanMode !== undefined && p.vlanMode !== 'access' && p.vlanMode !== 'trunk') return fail('Modo de VLAN inválido.')
+        if (p.vlan !== undefined && (!Number.isInteger(p.vlan) || p.vlan < 1 || p.vlan > 4094)) return fail('VLAN fora de 1–4094.')
+        if (p.vlanMode === 'trunk' && p.vlan !== undefined) return fail('Porta tronco não tem VLAN de acesso.')
+      }
     }
     if (typeof d.x !== 'number' || typeof d.y !== 'number') return fail('Posição de equipamento inválida.')
     if (d.gateway !== undefined) {

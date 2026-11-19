@@ -45,6 +45,19 @@ pub struct Port {
     /// Interface administrativamente desligada (`shutdown` na CLI).
     #[serde(default, skip_serializing_if = "is_false")]
     pub shutdown: bool,
+    /// Modo VLAN de uma porta de switch (`vlan access` ou `vlan trunk`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vlan_mode: Option<VlanMode>,
+    /// VLAN de acesso (1–4094).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vlan: Option<u16>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum VlanMode {
+    Access,
+    Trunk,
 }
 
 fn is_false(b: &bool) -> bool {
@@ -163,6 +176,19 @@ impl Topology {
                 }
                 gw.parse::<Ipv4Addr>().map_err(|_| format!("gateway inválido: {gw}"))?;
             }
+            for p in &d.ports {
+                if (p.vlan_mode.is_some() || p.vlan.is_some()) && d.kind != DeviceKind::Switch {
+                    return Err(format!("configuração de VLAN só existe em switches: {}", d.name));
+                }
+                if let Some(v) = p.vlan {
+                    if !(1..=4094).contains(&v) {
+                        return Err(format!("VLAN fora de 1–4094: {v}"));
+                    }
+                }
+                if p.vlan_mode == Some(VlanMode::Trunk) && p.vlan.is_some() {
+                    return Err("porta tronco não tem VLAN de acesso".into());
+                }
+            }
             if let Some(p) = &d.dhcp_pool {
                 if d.kind == DeviceKind::Switch {
                     return Err(format!("pool DHCP não existe em switches: {}", d.name));
@@ -268,7 +294,7 @@ pub(crate) fn sample_pc(id: &str, ip: Option<&str>) -> Device {
             name: "Porta 1".into(),
             ip: ip.map(String::from),
             prefix_len: ip.map(|_| 24),
-            shutdown: false,
+            shutdown: false, vlan_mode: None, vlan: None,
         }],
         gateway: None,
         routes: Vec::new(),
@@ -294,7 +320,7 @@ mod tests {
                     name: "Switch 1".into(),
                     x: 0.0,
                     y: 0.0,
-                    ports: (1..=8).map(|i| Port { id: format!("p{i}"), name: format!("Porta {i}"), ip: None, prefix_len: None, shutdown: false }).collect(),
+                    ports: (1..=8).map(|i| Port { id: format!("p{i}"), name: format!("Porta {i}"), ip: None, prefix_len: None, shutdown: false, vlan_mode: None, vlan: None }).collect(),
                     gateway: None,
                     routes: Vec::new(),
                     dhcp_pool: None,

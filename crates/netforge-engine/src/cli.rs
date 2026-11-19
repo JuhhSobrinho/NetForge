@@ -6,7 +6,7 @@
 //! e recebe a saída, o novo modo e, se houve configuração, a topologia alterada.
 
 use crate::sim::{run_dhcp, run_dns, run_ping, run_traceroute, DeviceTables};
-use crate::topology::{netmask, Device, DeviceKind, StaticRoute, Topology};
+use crate::topology::{netmask, Device, DeviceKind, StaticRoute, Topology, VlanMode};
 use serde::{Deserialize, Serialize};
 use std::net::Ipv4Addr;
 
@@ -139,6 +139,7 @@ impl Ctx<'_> {
             }
             ["show", "ip", "interface", "brief"] => return self.show_interfaces(),
             ["show", "ip", "route"] => return self.show_routes(),
+            ["show", "vlan", "brief"] => return self.show_vlans(),
             ["show", "arp"] => return self.show_arp(),
             ["show", "mac", "address-table"] => return self.show_mac(),
             ["traceroute", ..] => return self.traceroute(&args),
@@ -217,6 +218,24 @@ impl Ctx<'_> {
                 p.prefix_len = None;
             }),
             ["shutdown"] => self.edit_port(&port_id, |p| p.shutdown = true),
+            ["vlan", "access", id] => {
+                let vid: u16 = id.parse().map_err(|_| format!("VLAN inválida: {id}"))?;
+                if !(1..=4094).contains(&vid) {
+                    return Err(format!("VLAN fora de 1–4094: {vid}"));
+                }
+                self.edit_port(&port_id, |p| {
+                    p.vlan_mode = Some(VlanMode::Access);
+                    p.vlan = Some(vid);
+                })
+            }
+            ["vlan", "trunk"] => self.edit_port(&port_id, |p| {
+                p.vlan_mode = Some(VlanMode::Trunk);
+                p.vlan = None;
+            }),
+            ["no", "vlan"] => self.edit_port(&port_id, |p| {
+                p.vlan_mode = None;
+                p.vlan = None;
+            }),
             ["no", "shutdown"] => self.edit_port(&port_id, |p| p.shutdown = false),
             _ => Err(unknown(line)),
         }
@@ -225,9 +244,6 @@ impl Ctx<'_> {
     /// Localiza a porta pelo id (`p1`) ou pelo nome da interface (`porta 1`, sem espaço: `porta1`).
     fn find_port(&self, id: &str) -> Result<String, String> {
         let dev = self.device();
-        if dev.kind == DeviceKind::Switch {
-            return Err("switches não têm configuração de interface nesta versão".into());
-        }
         let wanted = id.to_lowercase();
         let found = dev.ports.iter().find(|p| {
             p.id.to_lowercase() == wanted || p.name.to_lowercase().replace(' ', "") == wanted
@@ -397,6 +413,22 @@ impl Ctx<'_> {
             .routes
             .retain(|r| !(r.network == target && r.prefix_len == prefix));
         self.save(t)
+    }
+
+    fn show_vlans(&mut self) -> Result<(), String> {
+        let dev = self.device().clone();
+        if dev.kind != DeviceKind::Switch {
+            return Err("show vlan só existe em switches".into());
+        }
+        self.output.push(format!("{:<12} {:<8} {}", "Interface", "Modo", "VLAN"));
+        for p in &dev.ports {
+            let (mode, vlan) = match p.vlan_mode {
+                Some(VlanMode::Trunk) => ("trunk", "todas".to_string()),
+                _ => ("access", p.vlan.unwrap_or(1).to_string()),
+            };
+            self.output.push(format!("{:<12} {:<8} {}", p.id, mode, vlan));
+        }
+        Ok(())
     }
 
     fn show_interfaces(&mut self) -> Result<(), String> {
@@ -600,7 +632,7 @@ mod tests {
             name: format!("Roteador {id}"),
             x: 0.0,
             y: 0.0,
-            ports: (1..=4).map(|i| Port { id: format!("p{i}"), name: format!("Porta {i}"), ip: None, prefix_len: None, shutdown: false }).collect(),
+            ports: (1..=4).map(|i| Port { id: format!("p{i}"), name: format!("Porta {i}"), ip: None, prefix_len: None, shutdown: false, vlan_mode: None, vlan: None }).collect(),
             gateway: None,
             routes: Vec::new(),
             dhcp_pool: None,
@@ -838,5 +870,39 @@ mod tests {
         let out = run(&t, "a", CliSession::default(), "nslookup web.lab");
         assert!(out.error);
         assert!(out.output[0].starts_with("% "), "{:?}", out.output);
+    }
+
+    #[test]
+    fn vlan_commands_configure_switch_ports() {
+        let mut t = topo();
+        t.devices.push(Device {
+            id: "sw".into(),
+            kind: DeviceKind::Switch,
+            name: "Switch 1".into(),
+            x: 0.0,
+            y: 0.0,
+            ports: (1..=8).map(|i| Port { id: format!("p{i}"), name: format!("Porta {i}"), ip: None, prefix_len: None, shutdown: false, vlan_mode: None, vlan: None }).collect(),
+            gateway: None,
+            routes: Vec::new(),
+            dhcp_pool: None,
+            name_server: None,
+            dns_records: Vec::new(),
+        });
+        let s = CliSession { mode: Mode::Interface, interface: Some("p2".into()) };
+        let out = execute(&t, "sw", s.clone(), "vlan access 10", None).unwrap();
+        let t2 = out.topology.expect("vlan altera a topologia");
+        assert_eq!(t2.devices[2].ports[1].vlan, Some(10));
+        let out = execute(&t2, "sw", s.clone(), "vlan trunk", None).unwrap();
+        let t3 = out.topology.unwrap();
+        assert_eq!(t3.devices[2].ports[1].vlan_mode, Some(VlanMode::Trunk));
+        let out = execute(&t3, "sw", CliSession { mode: Mode::Privileged, interface: None }, "show vlan brief", None).unwrap();
+        assert!(out.output.iter().any(|l| l.contains("trunk")), "{:?}", out.output);
+    }
+
+    #[test]
+    fn vlan_out_of_range_is_rejected() {
+        let t = topo();
+        let out = run(&t, "r", CliSession { mode: Mode::Interface, interface: Some("p1".into()) }, "vlan access 5000");
+        assert!(out.error);
     }
 }

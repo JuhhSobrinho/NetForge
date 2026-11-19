@@ -22,7 +22,7 @@ use crate::dhcp::{DhcpMessage, CLIENT_PORT, MSG_ACK, MSG_DISCOVER, MSG_OFFER, MS
 use crate::ipv4::{Ipv4Packet, DEFAULT_TTL, PROTO_ICMP};
 use crate::udp::{UdpDatagram, PROTO_UDP};
 use crate::pcap::PcapWriter;
-use crate::topology::{netmask, parse_address, Address, DeviceKind, DhcpPool, Topology};
+use crate::topology::{netmask, parse_address, Address, DeviceKind, DhcpPool, Topology, VlanMode};
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap};
@@ -157,6 +157,7 @@ pub struct ArpEntry {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MacEntry {
+    pub vlan: u16,
     pub mac: String,
     pub port: String,
 }
@@ -201,7 +202,8 @@ impl Simulation {
                 let mut mac_table: Vec<MacEntry> = d
                     .mac_table
                     .iter()
-                    .map(|(mac, port)| MacEntry {
+                    .map(|((vid, mac), port)| MacEntry {
+                        vlan: *vid,
                         mac: mac_text(mac),
                         port: d.port_ids.get(*port).cloned().unwrap_or_default(),
                     })
@@ -255,6 +257,7 @@ struct Route {
 }
 
 struct Runtime {
+    ports_vlan: Vec<PortVlan>,
     pool: Option<Pool>,
     dns_records: Vec<(String, Ipv4Addr)>,
     id: String,
@@ -265,7 +268,7 @@ struct Runtime {
     arp: HashMap<Ipv4Addr, Mac>,
     /// Pacotes esperando a resolução ARP do próximo salto: próximo salto → (porta, pacote).
     waiting: HashMap<Ipv4Addr, Vec<(usize, Ipv4Packet)>>,
-    mac_table: HashMap<Mac, usize>,
+    mac_table: HashMap<(u16, Mac), usize>,
     routes: Vec<Route>,
 }
 
@@ -492,6 +495,14 @@ impl Simulation {
                 let ip: Ipv4Addr = r.ip.parse().map_err(|_| "registro DNS inválido")?;
                 dns_records.push((dns::normalize_name(&r.name)?, ip));
             }
+            let ports_vlan: Vec<PortVlan> = d
+                .ports
+                .iter()
+                .map(|p| match p.vlan_mode {
+                    Some(VlanMode::Trunk) => PortVlan::Trunk,
+                    _ => PortVlan::Access(p.vlan.unwrap_or(1)),
+                })
+                .collect();
             let pool = match &d.dhcp_pool {
                 Some(p) => Some(build_pool(p, &ifaces)?),
                 None => None,
@@ -506,6 +517,7 @@ impl Simulation {
                 waiting: HashMap::new(),
                 mac_table: HashMap::new(),
                 routes,
+                ports_vlan,
                 pool,
                 dns_records,
             });
@@ -680,8 +692,9 @@ impl Simulation {
         if self.capture == Some(from) {
             self.pcap.record(self.now, &bytes);
         }
-        let detail = describe(&bytes);
-        let frame = frame_info(&bytes);
+        let plain = untag(&bytes).1;
+        let detail = describe(&plain);
+        let frame = frame_info(&plain);
         let link = self.link_ref(from, to);
         let before = self.log.len();
         self.push_log(self.now, from.dev, kind, detail);
@@ -726,43 +739,9 @@ impl Simulation {
         }
     }
 
-    fn switch_rx(&mut self, at: Endpoint, bytes: Vec<u8>) {
-        let dev = at.dev;
-        let frame = match Frame::decode(&bytes) {
-            Ok(f) => f,
-            Err(e) => {
-                self.push_log(self.now, dev, LogKind::Drop, e);
-                return;
-            }
-        };
-        if frame.src[0] & 1 == 0 {
-            let previous = self.devices[dev].mac_table.insert(frame.src, at.port);
-            if previous != Some(at.port) {
-                let detail = format!("aprendeu {} na porta {}", mac_text(&frame.src), at.port + 1);
-                self.push_log(self.now, dev, LogKind::Learn, detail);
-            }
-        }
-        let known = if frame.dst == BROADCAST || frame.dst[0] & 1 == 1 {
-            None
-        } else {
-            self.devices[dev].mac_table.get(&frame.dst).copied()
-        };
-        match known {
-            Some(p) if p == at.port => {
-                self.push_log(self.now, dev, LogKind::Drop, "destino na mesma porta de origem".into());
-            }
-            Some(p) => self.transmit(Endpoint { dev, port: p }, bytes, LogKind::Forward),
-            None => {
-                for p in 0..self.devices[dev].ifaces.len() {
-                    let out = Endpoint { dev, port: p };
-                    if p != at.port && self.wires.contains_key(&out) {
-                        self.transmit(out, bytes.clone(), LogKind::Flood);
-                    }
-                }
-            }
-        }
-    }
+}
 
+impl Simulation {
     /// Recebimento em hosts e roteadores.
     fn device_rx(&mut self, at: Endpoint, bytes: Vec<u8>) {
         let dev = at.dev;
@@ -1300,6 +1279,113 @@ impl Simulation {
     }
 }
 
+/// Modo de uma porta de switch: acesso a uma VLAN, ou tronco com quadros marcados (802.1Q).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PortVlan {
+    Access(u16),
+    Trunk,
+}
+
+const TPID: [u8; 2] = [0x81, 0x00];
+
+/// Lê a marca 802.1Q. Sem marca, o quadro pertence à VLAN 1 (nativa).
+fn untag(bytes: &[u8]) -> (u16, Vec<u8>) {
+    if bytes.len() >= 16 && bytes[12..14] == TPID {
+        let vid = u16::from_be_bytes([bytes[14], bytes[15]]) & 0x0fff;
+        let mut out = bytes[..12].to_vec();
+        out.extend_from_slice(&bytes[16..]);
+        (vid, out)
+    } else {
+        (1, bytes.to_vec())
+    }
+}
+
+/// Insere a marca 802.1Q (prioridade 0) com o identificador da VLAN.
+fn tag(untagged: &[u8], vid: u16) -> Vec<u8> {
+    let mut out = untagged[..12].to_vec();
+    out.extend_from_slice(&TPID);
+    out.extend_from_slice(&(vid & 0x0fff).to_be_bytes());
+    out.extend_from_slice(&untagged[12..]);
+    out
+}
+
+impl Simulation {
+    /// A porta pertence à VLAN? Tronco carrega todas.
+    fn carries(&self, dev: usize, port: usize, vid: u16) -> bool {
+        match self.devices[dev].ports_vlan[port] {
+            PortVlan::Access(v) => v == vid,
+            PortVlan::Trunk => true,
+        }
+    }
+
+    /// Bytes que saem pela porta: tronco ligado a outro switch envia marcado; o resto, sem marca.
+    fn egress(&self, dev: usize, port: usize, vid: u16, untagged: &[u8]) -> Vec<u8> {
+        let to_switch = self
+            .wires
+            .get(&Endpoint { dev, port })
+            .is_some_and(|p| self.devices[p.dev].kind == DeviceKind::Switch);
+        match self.devices[dev].ports_vlan[port] {
+            PortVlan::Trunk if to_switch => tag(untagged, vid),
+            _ => untagged.to_vec(),
+        }
+    }
+
+    fn switch_rx(&mut self, at: Endpoint, bytes: Vec<u8>) {
+        let dev = at.dev;
+        let (vid, untagged) = match self.devices[dev].ports_vlan[at.port] {
+            PortVlan::Access(v) => {
+                if bytes.len() >= 14 && bytes[12..14] == TPID {
+                    self.push_log(self.now, dev, LogKind::Drop, "quadro marcado em porta de acesso".into());
+                    return;
+                }
+                (v, bytes)
+            }
+            PortVlan::Trunk => untag(&bytes),
+        };
+        let frame = match Frame::decode(&untagged) {
+            Ok(f) => f,
+            Err(e) => {
+                self.push_log(self.now, dev, LogKind::Drop, e);
+                return;
+            }
+        };
+        if frame.src[0] & 1 == 0 {
+            let previous = self.devices[dev].mac_table.insert((vid, frame.src), at.port);
+            if previous != Some(at.port) {
+                let detail = format!("aprendeu {} na VLAN {vid}, porta {}", mac_text(&frame.src), at.port + 1);
+                self.push_log(self.now, dev, LogKind::Learn, detail);
+            }
+        }
+        let known = if frame.dst == BROADCAST || frame.dst[0] & 1 == 1 {
+            None
+        } else {
+            self.devices[dev].mac_table.get(&(vid, frame.dst)).copied()
+        };
+        match known {
+            Some(p) if p == at.port => {
+                self.push_log(self.now, dev, LogKind::Drop, "destino na mesma porta de origem".into());
+            }
+            Some(p) => {
+                if self.carries(dev, p, vid) {
+                    let out = self.egress(dev, p, vid, &untagged);
+                    self.transmit(Endpoint { dev, port: p }, out, LogKind::Forward);
+                } else {
+                    self.push_log(self.now, dev, LogKind::Drop, format!("destino fora da VLAN {vid}"));
+                }
+            }
+            None => {
+                for p in 0..self.devices[dev].ifaces.len() {
+                    let out_ep = Endpoint { dev, port: p };
+                    if p != at.port && self.wires.contains_key(&out_ep) && self.carries(dev, p, vid) {
+                        let out = self.egress(dev, p, vid, &untagged);
+                        self.transmit(out_ep, out, LogKind::Flood);
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Decodifica um quadro por camada. Retorna `None` se nem o Ethernet é válido.
 pub fn frame_info(bytes: &[u8]) -> Option<FrameInfo> {
     let frame = Frame::decode(bytes).ok()?;
@@ -1409,7 +1495,7 @@ mod tests {
     }
 
     fn port(id: &str, ip: Option<&str>, prefix: Option<u8>) -> Port {
-        Port { id: id.into(), name: format!("Porta {id}"), ip: ip.map(String::from), prefix_len: prefix, shutdown: false }
+        Port { id: id.into(), name: format!("Porta {id}"), ip: ip.map(String::from), prefix_len: prefix, shutdown: false, vlan_mode: None, vlan: None }
     }
 
     fn router(id: &str, ports: Vec<Port>, routes: Vec<StaticRoute>) -> Device {
@@ -1846,5 +1932,68 @@ mod tests {
         t.devices[0].name_server = None;
         let err = run_dns(&t, "c", "web.lab").unwrap_err();
         assert!(err.contains("nenhum servidor de nomes"), "{err}");
+    }
+
+    /// Switch com quatro portas: p1 e p2 na VLAN 10; p3 na VLAN 20; hosts na mesma sub-rede 10.0.9.0/24.
+    fn vlan_switch_topology() -> Topology {
+        let mut sw = switch("sw");
+        sw.ports[0].vlan_mode = Some(crate::topology::VlanMode::Access);
+        sw.ports[0].vlan = Some(10);
+        sw.ports[1].vlan_mode = Some(crate::topology::VlanMode::Access);
+        sw.ports[1].vlan = Some(10);
+        sw.ports[2].vlan_mode = Some(crate::topology::VlanMode::Access);
+        sw.ports[2].vlan = Some(20);
+        topo(
+            vec![host("a", "10.0.9.1", 24, None), host("b", "10.0.9.2", 24, None), host("c", "10.0.9.3", 24, None), sw],
+            vec![
+                link("l1", ("a", "p1"), ("sw", "p1")),
+                link("l2", ("b", "p1"), ("sw", "p2")),
+                link("l3", ("c", "p1"), ("sw", "p3")),
+            ],
+        )
+    }
+
+    #[test]
+    fn hosts_in_the_same_vlan_reach_each_other() {
+        let out = run_ping(&vlan_switch_topology(), "a", "10.0.9.2", 1).unwrap();
+        assert!(out.error.is_none(), "{:?}", out.error);
+        assert_eq!(out.replies.len(), 1);
+    }
+
+    #[test]
+    fn hosts_in_other_vlans_are_isolated() {
+        let out = run_ping(&vlan_switch_topology(), "a", "10.0.9.3", 1).unwrap();
+        assert!(out.replies.is_empty());
+        assert!(out.error.is_some());
+    }
+
+    #[test]
+    fn trunk_carries_vlan_tags_between_switches() {
+        let mut sw1 = switch("s1");
+        sw1.ports[0].vlan_mode = Some(crate::topology::VlanMode::Access);
+        sw1.ports[0].vlan = Some(10);
+        sw1.ports[7].vlan_mode = Some(crate::topology::VlanMode::Trunk);
+        let mut sw2 = switch("s2");
+        sw2.ports[0].vlan_mode = Some(crate::topology::VlanMode::Access);
+        sw2.ports[0].vlan = Some(10);
+        sw2.ports[7].vlan_mode = Some(crate::topology::VlanMode::Trunk);
+        let t = topo(
+            vec![host("a", "10.0.9.1", 24, None), host("b", "10.0.9.2", 24, None), sw1, sw2],
+            vec![
+                link("l1", ("a", "p1"), ("s1", "p1")),
+                link("l2", ("b", "p1"), ("s2", "p1")),
+                link("lt", ("s1", "p8"), ("s2", "p8")),
+            ],
+        );
+        let out = run_ping(&t, "a", "10.0.9.2", 1).unwrap();
+        assert!(out.error.is_none(), "{:?}", out.error);
+        assert_eq!(out.replies.len(), 1);
+    }
+
+    #[test]
+    fn mac_table_is_kept_per_vlan() {
+        let out = run_ping(&vlan_switch_topology(), "a", "10.0.9.2", 1).unwrap();
+        let sw = out.tables.iter().find(|t| t.device_id == "sw").unwrap();
+        assert!(sw.mac_table.iter().all(|m| m.vlan == 10));
     }
 }
