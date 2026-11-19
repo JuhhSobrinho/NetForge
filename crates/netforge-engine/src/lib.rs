@@ -5,6 +5,7 @@
 //! Ver docs/PROTOCOLS.md para o status de cada protocolo.
 
 pub mod arp;
+pub mod cli;
 pub mod checksum;
 pub mod ethernet;
 pub mod icmp;

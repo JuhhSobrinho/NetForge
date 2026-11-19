@@ -2,7 +2,7 @@
 
 Simulador de redes para Windows, com motor próprio, interface moderna e foco educacional.
 
-> **Status: Fase 3 concluída (com ressalvas).** O app monta topologia com endereços IPv4 e roda ping entre dois PCs ligados por switch, com log de eventos e exportação PCAP. Implementados com escopo mínimo: Ethernet, ARP, IPv4 (sem roteamento) e ICMP echo. Roteadores ainda não encaminham pacotes (Fase 4). Ver [docs/PROTOCOLS.md](docs/PROTOCOLS.md).
+> **Status: Fase 4 em andamento.** Roteadores encaminham pacotes entre sub-redes com rotas estáticas, e cada equipamento tem uma CLI de configuração. Faltam show arp, show mac address-table e traceroute. Ver [docs/PROTOCOLS.md](docs/PROTOCOLS.md).
 
 ## Objetivo
 

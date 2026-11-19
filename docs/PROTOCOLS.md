@@ -25,9 +25,9 @@ Fonte primária de comportamento: RFCs do IETF. O comportamento observado no Pac
 
 | Protocolo | Referência | Fase | Status | Escopo inicial | Fora do escopo inicial |
 |---|---|---|---|---|---|
-| IPv4 | RFC 791 | 3 | implementado (escopo mínimo) | Cabeçalho de 20 bytes com checksum, TTL 64, DF; entrega na mesma sub-rede | Opções, fragmentação, roteamento entre sub-redes (Fase 4) |
-| ICMP (IPv4) | RFC 792 | 3 | implementado (escopo mínimo) | Echo request/reply (tipos 0 e 8) | Time Exceeded, Destination Unreachable, Redirect |
-| Roteamento estático | — | 4 | não implementado | Tabela, longest prefix match | Rotas default múltiplas com métricas |
+| IPv4 | RFC 791 | 3 | implementado | Cabeçalho de 20 bytes com checksum, TTL 64 e DF; encaminhamento por roteadores com TTL (descarte com ICMP tempo excedido); rotas conectadas, estáticas e gateway padrão | Opções, fragmentação, protocolos de roteamento dinâmico (RIP/OSPF, fases 7+) |
+| ICMP (IPv4) | RFC 792 | 3 | implementado (escopo mínimo) | Echo request/reply (tipos 0 e 8); destino inalcançável (tipo 3, código 0) e tempo excedido (tipo 11), recebidos pelo ping | Redirect, códigos de erro além de 0 |
+| Roteamento estático | — | 4 | implementado (Fase 4) | Tabela com maior prefixo; rota conectada vence rota estática de mesmo prefixo; próximo salto precisa ser alcançável por interface conectada | Rotas com métricas, rotas flutuantes, balanceamento |
 | IPv6 | RFC 8200 | 6+ | não implementado | Cabeçalho, ICMPv6 echo | NDP completo, SLAAC (planejado depois) |
 | RIP | RFC 2453 (RIPv2) | 7+ | não implementado | — | Tudo (etapa posterior) |
 | OSPF | RFC 2328 (OSPFv2) | 7+ | não implementado | — | Tudo (etapa posterior) |
@@ -57,6 +57,10 @@ Observação: TCP completo é grande. Proposta: começar com handshake e transfe
 - Um protocolo só recebe o status `implementado` quando: (a) testes de referência passam, (b) há cenário de regressão em `tests/scenarios/`, e (c) quando aplicável, o PCAP gerado é comparado com captura de referência no Wireshark.
 - Representações visuais sem motor não aparecem na lista de protocolos suportados.
 - Cada item "fora do escopo" deve constar na interface ou na ajuda quando o usuário tentar usá-lo.
+
+## Status após a Fase 4
+
+Roteamento estático e encaminhamento com TTL implementados, além de gateway padrão em hosts e mensagens ICMP de erro. Validados por testes (roteamento entre duas sub-redes, duas rotas estáticas em sentido oposto, ICMP inalcançável, interface desligada) e por execução no app: PC 1 - roteador - PC 2 configurados só pela CLI, com 4 de 4 respostas. Ainda sem validação no Wireshark.
 
 ## Status após a Fase 3
 

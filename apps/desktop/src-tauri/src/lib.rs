@@ -1,5 +1,6 @@
 mod project_io;
 
+use netforge_engine::cli::{self, CliOutcome, CliSession};
 use netforge_engine::sim::{self, PingOutcome};
 use netforge_engine::topology::Topology;
 use serde::Serialize;
@@ -52,6 +53,17 @@ fn export_pcap(path: String, bytes: Vec<u8>) -> Result<(), String> {
     project_io::write_capture(&path, &bytes)
 }
 
+/// Executa uma linha da CLI de um equipamento. O frontend guarda o modo entre as linhas.
+#[tauri::command]
+fn cli_execute(
+    topology: Topology,
+    device_id: String,
+    session: CliSession,
+    line: String,
+) -> Result<CliOutcome, String> {
+    cli::execute(&topology, &device_id, session, &line)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
   tauri::Builder::default()
@@ -61,7 +73,8 @@ pub fn run() {
         save_project_file,
         open_project_file,
         run_ping,
-        export_pcap
+        export_pcap,
+        cli_execute
     ])
     .setup(|app| {
       if cfg!(debug_assertions) {

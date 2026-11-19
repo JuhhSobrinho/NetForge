@@ -55,16 +55,16 @@ Requisito do briefing: parser próprio e respostas baseadas no estado real.
 
 | Comando | Prioridade | Fase |
 |---|---|---|
-| `show ip interface brief` | P0 | 4 |
-| `show ip route` | P0 | 4 |
-| `show arp` | P0 | 3/4 |
-| `show mac address-table` | P0 | 4 |
-| `ping` | P0 | 3 |
-| `traceroute` | P1 | 4 |
-| `configure terminal` | P0 | 4 |
-| `interface` | P0 | 4 |
-| `ip address` | P0 | 4 |
-| `no shutdown` | P0 | 4 |
+| `show ip interface brief` | P0 | 4 (implementado) |
+| `show ip route` | P0 | 4 (implementado) |
+| `show arp` | P0 | 3/4 (pendente: depende de tabelas de execução persistentes) |
+| `show mac address-table` | P0 | 4 (pendente: mesma razão de show arp) |
+| `ping` | P0 | 3 (implementado) |
+| `traceroute` | P1 | 4 (pendente) |
+| `configure terminal` | P0 | 4 (implementado) |
+| `interface` | P0 | 4 (implementado; nomes `p1`, `p2`... ou `porta 1`) |
+| `ip address` | P0 | 4 (implementado) |
+| `no shutdown` | P0 | 4 (implementado; também `shutdown`) |
 
 Regra: **a sintaxe dos comandos é nossa**. Comandos com o nome de IOS são uma escolha de compatibilidade didática; não copiamos a saída textual do IOS. Respostas devem ser geradas pelo estado do motor. Nenhum comando retorna texto fixo.
 

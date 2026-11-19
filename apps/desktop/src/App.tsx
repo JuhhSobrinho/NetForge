@@ -24,6 +24,7 @@ import {
 } from './topology/model'
 import { createStressTopology } from './topology/stress'
 import { PingPanel } from './ping/PingPanel'
+import { DeviceTerminal } from './cli/DeviceTerminal'
 import './App.css'
 
 const newId = () => crypto.randomUUID()
@@ -219,6 +220,7 @@ export default function App() {
               topology={topology}
               onRename={rename}
               onSetAddress={setAddress}
+              onConfigure={(t) => apply(() => t)}
               onRemove={() => deleteElements([device.id], [])}
             />
           ) : link ? (
@@ -256,12 +258,14 @@ function DeviceProperties({
   topology,
   onRename,
   onSetAddress,
+  onConfigure,
   onRemove,
 }: {
   device: NonNullable<ReturnType<typeof findDevice>>
   topology: Topology
   onRename: (id: string, name: string) => void
   onSetAddress: (deviceId: string, portId: string, ip: string, prefixLen: number | undefined) => void
+  onConfigure: (t: Topology) => void
   onRemove: () => void
 }) {
   const [draft, setDraft] = useState(device.name)
@@ -295,6 +299,7 @@ function DeviceProperties({
             const otherDevice = findDevice(topology, other.deviceId)
             status = `ligada a ${otherDevice?.name ?? '?'} · ${other.portId}`
           }
+          if (port.shutdown) status = `desligada · ${status}`
           return (
             <li key={port.id} className="port-row">
               <div className="port-row__head">
@@ -313,6 +318,7 @@ function DeviceProperties({
           )
         })}
       </ul>
+      <DeviceTerminal key={device.id} topology={topology} device={device} onTopology={onConfigure} />
       <div className="actions">
         <button className="danger" onClick={onRemove}>
           Remover equipamento

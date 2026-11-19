@@ -131,3 +131,14 @@ Todas as decisões abaixo estão **propostas** até a aprovação do responsáve
   - Latência de link fixa de 1000 µs e sem perda de pacotes. Esses parâmetros são constantes do motor, não configuráveis por enquanto.
   - Captura PCAP feita na interface da origem (quadros transmitidos e recebidos). Não há captura por link, como um sniffer de rede faria.
   - Laço de camada 2 sem STP é interrompido por limite de eventos (20 000) e reportado como erro.
+
+## ADR-017 — CLI sem estado no motor; modo de sessão guardado no frontend
+
+- **Status:** aceita (2026-11-18)
+- **Contexto:** a CLI precisa de modos (usuário, privilegiado, configuração, interface), mas o motor só guarda a topologia e executa pings sob demanda.
+- **Decisão:** o motor (`netforge_engine::cli::execute`) recebe topologia, equipamento, modo e linha; devolve saída, novo modo e, se houve configuração, a topologia alterada. O frontend guarda o modo por equipamento e aplica a topologia alterada como uma única etapa de undo.
+- **Consequências:**
+  - Cada linha envia a topologia inteira. Aceitável com topologias pequenas; se virar gargalo, o motor passa a guardar a topologia entre chamadas.
+  - O modo se perde quando o terminal é recriado (ao trocar de equipamento). Isso é uma limitação conhecida, não um bug.
+  - `show arp` e `show mac address-table` ficam de fora até o motor manter tabelas entre execuções; a decisão é deliberadamente adiada.
+  - A sintaxe de comandos é do NetForge (inspirada em CLIs de roteadores), e as interfaces são nomeadas `p1`, `p2`... para não copiar nomes de equipamentos reais.

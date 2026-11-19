@@ -14,6 +14,15 @@ export interface Port {
   ip?: string
   /** Comprimento do prefixo (0–32). Só existe junto com `ip`. */
   prefixLen?: number
+  /** Interface administrativamente desligada (`shutdown` na CLI). */
+  shutdown?: boolean
+}
+
+/** Rota estática de um roteador (`ip route`). */
+export interface StaticRoute {
+  network: string
+  prefixLen: number
+  nextHop: string
 }
 
 const IPV4_RE = /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/
@@ -73,6 +82,10 @@ export interface Device {
   x: number
   y: number
   ports: Port[]
+  /** Gateway padrão de PCs e servidores (`ip default-gateway`). */
+  gateway?: string
+  /** Rotas estáticas de roteadores. */
+  routes?: StaticRoute[]
 }
 
 export interface PortRef {
@@ -251,8 +264,21 @@ export function parseTopology(json: string): Result<Topology> {
       portIds.add(p.id)
       const addr = validateAddress(p.ip, p.prefixLen)
       if (!addr.ok) return fail(addr.error)
+      if (p.shutdown !== undefined && typeof p.shutdown !== 'boolean') return fail('Estado de shutdown inválido.')
     }
     if (typeof d.x !== 'number' || typeof d.y !== 'number') return fail('Posição de equipamento inválida.')
+    if (d.gateway !== undefined) {
+      if (d.kind !== 'pc' && d.kind !== 'server') return fail('Gateway padrão só existe em PCs e servidores.')
+      if (!isValidIpv4(String(d.gateway))) return fail(`Gateway inválido: ${String(d.gateway)}.`)
+    }
+    if (d.routes !== undefined) {
+      if (!Array.isArray(d.routes)) return fail('Rotas inválidas.')
+      if (d.routes.length > 0 && d.kind !== 'router') return fail('Rotas estáticas só existem em roteadores.')
+      for (const r of d.routes) {
+        if (!isValidIpv4(String(r?.network)) || !isValidIpv4(String(r?.nextHop)) || !Number.isInteger(r?.prefixLen) || r.prefixLen < 0 || r.prefixLen > 32)
+          return fail('Rota estática inválida.')
+      }
+    }
     deviceIds.add(d.id)
   }
 

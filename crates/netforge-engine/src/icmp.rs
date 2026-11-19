@@ -78,3 +78,72 @@ mod tests {
         assert!(IcmpEcho::decode(&bytes).is_err());
     }
 }
+
+// ---- Mensagens de erro (RFC 792): destino inalcançável (3) e tempo excedido (11).
+// O corpo leva o cabeçalho IPv4 do datagrama original e os 8 primeiros bytes do payload.
+
+pub const TYPE_DEST_UNREACHABLE: u8 = 3;
+pub const TYPE_TIME_EXCEEDED: u8 = 11;
+pub const CODE_NET_UNREACHABLE: u8 = 0;
+pub const CODE_TTL_IN_TRANSIT: u8 = 0;
+
+/// Monta uma mensagem de erro a partir do datagrama original (bytes do IPv4 completo).
+pub fn encode_error(kind: u8, code: u8, original_ip_packet: &[u8]) -> Vec<u8> {
+    let take = original_ip_packet.len().min(20 + 8);
+    let mut m = Vec::with_capacity(8 + take);
+    m.push(kind);
+    m.push(code);
+    m.extend_from_slice(&[0, 0]);
+    m.extend_from_slice(&[0, 0, 0, 0]); // não utilizado
+    m.extend_from_slice(&original_ip_packet[..take]);
+    let c = internet_checksum(&m);
+    m[2..4].copy_from_slice(&c.to_be_bytes());
+    m
+}
+
+/// Erro ICMP recebido: tipo, código e o início do datagrama original.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IcmpError {
+    pub kind: u8,
+    pub code: u8,
+    pub original: Vec<u8>,
+}
+
+impl IcmpError {
+    pub fn decode(bytes: &[u8]) -> Result<IcmpError, String> {
+        if bytes.len() < 8 {
+            return Err("mensagem de erro ICMP truncada".into());
+        }
+        if internet_checksum(bytes) != 0 {
+            return Err("checksum ICMP inválido".into());
+        }
+        let kind = bytes[0];
+        if kind != TYPE_DEST_UNREACHABLE && kind != TYPE_TIME_EXCEEDED {
+            return Err(format!("tipo de erro ICMP não suportado: {kind}"));
+        }
+        Ok(IcmpError { kind, code: bytes[1], original: bytes[8..].to_vec() })
+    }
+}
+
+#[cfg(test)]
+mod error_tests {
+    use super::*;
+
+    #[test]
+    fn error_message_round_trips_and_keeps_original_header() {
+        let original = vec![0x45u8; 40];
+        let msg = encode_error(TYPE_DEST_UNREACHABLE, CODE_NET_UNREACHABLE, &original);
+        assert_eq!(internet_checksum(&msg), 0);
+        let e = IcmpError::decode(&msg).unwrap();
+        assert_eq!(e.kind, TYPE_DEST_UNREACHABLE);
+        assert_eq!(e.code, CODE_NET_UNREACHABLE);
+        assert_eq!(e.original.len(), 28);
+        assert_eq!(&e.original[..], &original[..28]);
+    }
+
+    #[test]
+    fn echo_is_not_an_error() {
+        let echo = IcmpEcho { kind: TYPE_ECHO_REQUEST, id: 1, seq: 1, data: vec![] }.encode();
+        assert!(IcmpError::decode(&echo).is_err());
+    }
+}

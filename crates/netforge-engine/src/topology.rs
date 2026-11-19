@@ -42,6 +42,22 @@ pub struct Port {
     pub ip: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prefix_len: Option<u8>,
+    /// Interface administrativamente desligada (`shutdown` na CLI).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub shutdown: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
+/// Rota estática de um roteador: `ip route <rede> <prefixo> <próximo salto>`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StaticRoute {
+    pub network: String,
+    pub prefix_len: u8,
+    pub next_hop: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -53,6 +69,12 @@ pub struct Device {
     pub x: f64,
     pub y: f64,
     pub ports: Vec<Port>,
+    /// Gateway padrão de um host (`ip default-gateway`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gateway: Option<String>,
+    /// Rotas estáticas de um roteador.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub routes: Vec<StaticRoute>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -106,6 +128,26 @@ impl Topology {
                     return Err(format!("porta duplicada em {}: {}", d.name, p.id));
                 }
                 parse_address(p)?;
+            }
+            if let Some(gw) = &d.gateway {
+                if d.kind != DeviceKind::Pc && d.kind != DeviceKind::Server {
+                    return Err(format!("gateway padrão só existe em PCs e servidores: {}", d.name));
+                }
+                gw.parse::<Ipv4Addr>().map_err(|_| format!("gateway inválido: {gw}"))?;
+            }
+            if !d.routes.is_empty() && d.kind != DeviceKind::Router {
+                return Err(format!("rotas estáticas só existem em roteadores: {}", d.name));
+            }
+            for r in &d.routes {
+                if r.prefix_len > 32 {
+                    return Err(format!("prefixo de rota fora de 0–32: {}", r.prefix_len));
+                }
+                r.network
+                    .parse::<Ipv4Addr>()
+                    .map_err(|_| format!("rede de rota inválida: {}", r.network))?;
+                r.next_hop
+                    .parse::<Ipv4Addr>()
+                    .map_err(|_| format!("próximo salto inválido: {}", r.next_hop))?;
             }
         }
         let mut link_ids = HashSet::new();
@@ -174,7 +216,10 @@ pub(crate) fn sample_pc(id: &str, ip: Option<&str>) -> Device {
             name: "Porta 1".into(),
             ip: ip.map(String::from),
             prefix_len: ip.map(|_| 24),
+            shutdown: false,
         }],
+        gateway: None,
+        routes: Vec::new(),
     }
 }
 
@@ -194,7 +239,9 @@ mod tests {
                     name: "Switch 1".into(),
                     x: 0.0,
                     y: 0.0,
-                    ports: (1..=8).map(|i| Port { id: format!("p{i}"), name: format!("Porta {i}"), ip: None, prefix_len: None }).collect(),
+                    ports: (1..=8).map(|i| Port { id: format!("p{i}"), name: format!("Porta {i}"), ip: None, prefix_len: None, shutdown: false }).collect(),
+                    gateway: None,
+                    routes: Vec::new(),
                 },
             ],
             links: vec![
