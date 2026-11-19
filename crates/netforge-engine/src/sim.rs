@@ -143,6 +143,8 @@ pub struct PingOutcome {
     pub pcap: Vec<u8>,
     /// Tabelas ARP e MAC ao final da execução (usadas por show arp e show mac address-table).
     pub tables: Vec<DeviceTables>,
+    /// Diagnóstico determinístico baseado nos eventos do log.
+    pub diagnostics: Vec<crate::diagnose::Finding>,
 }
 
 /// Entrada da tabela ARP de um equipamento.
@@ -361,6 +363,7 @@ pub fn run_ping(topology: &Topology, source_id: &str, target: &str, count: u8) -
     }
 
     let tables = sim.tables();
+    let diagnostics = crate::diagnose::diagnose(&target_ip.to_string(), transmitted, replies.len(), error.as_deref(), &sim.log);
     Ok(PingOutcome {
         target: target_ip.to_string(),
         transmitted,
@@ -370,6 +373,7 @@ pub fn run_ping(topology: &Topology, source_id: &str, target: &str, count: u8) -
         log_truncated: sim.log_truncated,
         pcap: sim.pcap.into_bytes(),
         tables,
+        diagnostics,
     })
 }
 
@@ -2294,5 +2298,25 @@ mod tests {
     fn tcp_segments_appear_in_the_log_with_flags_in_labels() {
         let out = run_tcp(&tcp_topology(true), "c", "10.0.6.2", 7, "x").unwrap();
         assert!(out.log.iter().any(|e| e.frame.as_ref().is_some_and(|f| f.protocol == "TCP")));
+    }
+
+    #[test]
+    fn diagnosis_of_a_real_unanswered_host_points_to_arp() {
+        let out = run_ping(&two_pcs_and_switch(), "a", "10.0.0.50", 1).unwrap();
+        assert!(out.diagnostics.iter().any(|f| f.title == "Ninguém respondeu ao ARP de 10.0.0.50"), "{:?}", out.diagnostics);
+    }
+
+    #[test]
+    fn diagnosis_of_a_real_vlan_block_names_the_switch() {
+        let out = run_ping(&vlan_switch_topology(), "a", "10.0.9.3", 1).unwrap();
+        // O ARP em broadcast não atravessa a VLAN: o diagnóstico aponta o ARP sem resposta e cita a VLAN.
+        assert!(out.diagnostics.iter().any(|f| f.title == "Ninguém respondeu ao ARP de 10.0.9.3" && f.suggestion.contains("VLAN")), "{:?}", out.diagnostics);
+    }
+
+    #[test]
+    fn diagnosis_of_a_success_is_confirmation() {
+        let out = run_ping(&two_pcs_and_switch(), "a", "10.0.0.2", 2).unwrap();
+        assert_eq!(out.diagnostics.len(), 1);
+        assert_eq!(out.diagnostics[0].severity, crate::diagnose::Severity::Info);
     }
 }

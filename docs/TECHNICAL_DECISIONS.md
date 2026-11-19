@@ -84,7 +84,7 @@ Todas as decisões abaixo estão **propostas** até a aprovação do responsáve
 
 ## ADR-010 — Assistente de IA: consultas ao estado real, sem invenção
 
-- **Status:** proposta (aberta)
+- **Status:** parcialmente implementada (2026-11-19): diagnóstico determinístico do ping (crates/netforge-engine/src/diagnose.rs). Integração com LLM não implementada.
 - **Contexto:** o briefing exige que a IA consulte o simulador e não invente diagnósticos.
 - **Decisão:** antes de qualquer LLM, implementar diagnósticos determinísticos baseados em eventos de descarte (ex.: "ARP sem resposta; host de destino fora da sub-rede"). Um LLM, se usado, só recebe esse estado como contexto e tem a saída validada contra o motor.
 - **Consequências:** o assistente é limitado pelo que o motor modela; a interface deve deixar isso claro.

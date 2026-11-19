@@ -117,6 +117,14 @@ export function PingPanel({
             {outcome.replies.length > 0 &&
               ` · RTT ${outcome.replies.map((r) => (r.rttUs / 1000).toFixed(2)).join(' / ')} ms`}
           </p>
+          <ul className="diagnostics" aria-label="Diagnóstico">
+            {outcome.diagnostics.map((f, i) => (
+              <li key={i} className={`diagnostics__item diagnostics__item--${f.severity}`}>
+                <strong>{f.title}</strong>
+                {f.suggestion && <span className="diagnostics__hint">{f.suggestion}</span>}
+              </li>
+            ))}
+          </ul>
           <Timeline
             key={runId}
             entries={outcome.log}

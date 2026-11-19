@@ -5,6 +5,7 @@ Formato baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/). 
 ## [Não lançado]
 
 ### Adicionado
+- Fase 7 (em andamento): diagnóstico determinístico de ping, com conclusões ligadas a eventos do log e sugestões de comandos da CLI (ADR-010).
 - Fase 6: TCP reduzido (handshake, eco, fechamento, RST) com ip tcp-listen e tcp-test; VLAN de acesso e tronco (802.1Q) em switches, com aprendizado por VLAN; UDP; DHCP com DORA pela simulação, pool em servidores (ip dhcp-pool) e cliente (ip address dhcp); ADR-019; DNS tipo A com registros em servidores (ip dns-record), servidor de nomes em hosts (ip name-server) e consulta pela CLI (nslookup).
 - Fase 5: quadros decodificados por camada e enlace por transmissão no log do motor; linha do tempo com play, pausa, avançar, voltar, velocidade, filtro por protocolo e cursor; enlace animado no canvas durante a transmissão; inspetor com Ethernet, ARP, IPv4 e ICMP. ADR-018.
 - Fase 4: roteadores com encaminhamento, rotas estáticas, TTL e ICMP de erro; gateway padrão em PCs e servidores; interfaces desligáveis (shutdown); CLI por equipamento com modos e comandos show ip interface brief, show ip route, show arp, show mac address-table, ping, traceroute, ip address, ip route, ip default-gateway; ADR-017.

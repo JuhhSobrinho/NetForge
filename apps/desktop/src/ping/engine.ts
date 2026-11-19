@@ -63,6 +63,14 @@ export interface PingReply {
   rttUs: number
 }
 
+/** Conclusão do diagnóstico determinístico, com os índices do log que a sustentam. */
+export interface Finding {
+  severity: 'info' | 'warning' | 'error'
+  title: string
+  evidence: number[]
+  suggestion: string
+}
+
 export interface PingOutcome {
   target: string
   transmitted: number
@@ -74,6 +82,8 @@ export interface PingOutcome {
   pcap: number[]
   /** Tabelas ARP e MAC ao final da execução. */
   tables: DeviceTables[]
+  /** Diagnóstico baseado nos eventos reais. */
+  diagnostics: Finding[]
 }
 
 /** Enlace destacado no canvas enquanto a linha do tempo está nele. */

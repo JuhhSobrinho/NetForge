@@ -374,3 +374,11 @@ button.danger {
 @keyframes nf-flow { to { stroke-dashoffset: -28; } }
 .edge--active .react-flow__edge-textbg { fill: var(--accent-soft); }
 .edge--active .react-flow__edge-text { fill: var(--accent); font-size: 11px; }
+
+/* Diagnóstico do ping (Fase 7) */
+.diagnostics { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 6px; }
+.diagnostics__item { font-size: 12px; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--canvas); }
+.diagnostics__item--error { border-color: var(--danger); }
+.diagnostics__item--warning { border-color: #b7791f; }
+.diagnostics__item--info { border-color: var(--ok); }
+.diagnostics__hint { display: block; color: var(--muted); margin-top: 2px; }

@@ -7,6 +7,7 @@
 pub mod arp;
 pub mod cli;
 pub mod dhcp;
+pub mod diagnose;
 pub mod dns;
 pub mod udp;
 pub mod checksum;
