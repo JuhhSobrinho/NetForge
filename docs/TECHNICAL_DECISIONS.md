@@ -154,3 +154,10 @@ As tabelas ARP e MAC passaram a ser devolvidas pelo motor ao final de cada ping 
 - **Decisão:** o motor devolve o log completo de cada execução (com quadro decodificado e enlace por transmissão). O "voltar" move o cursor dentro desse log; não há restauração de estado de rede no frontend.
 - **Motivo:** a execução é determinística e de tamanho limitado (MAX_LOG_ENTRIES), então o log completo já contém tudo que a visualização precisa. Snapshots só seriam necessários se o motor passasse a rodar sessões longas.
 - **Consequências:** o voltar mostra o que já aconteceu, não reexecuta nada. Se o motor ganhar simulação contínua (fora do escopo atual), a decisão deve ser revista.
+
+## ADR-019 — DHCP como fluxo da simulação; concessão gravada como endereço estático
+
+- **Status:** aceita (2026-11-18)
+- **Decisão:** o DORA roda dentro da simulação (`run_dhcp`), com quadros reais e log. O cliente recebe a concessão e a CLI (`ip address dhcp`) a grava na interface, junto com o gateway padrão. Não há estado de cliente DHCP persistente nem temporizadores de renovação.
+- **Motivo:** mantém o motor sem estado entre chamadas (ADR-017) e o resultado visível no modelo, com undo.
+- **Consequências:** concessões não expiram; mudar o pool não atualiza clientes já configurados; DHCP não atravessa roteadores sem relay.

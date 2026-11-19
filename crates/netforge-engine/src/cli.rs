@@ -5,7 +5,7 @@
 //! O motor não guarda sessão: o frontend envia a topologia atual, o modo e a linha digitada,
 //! e recebe a saída, o novo modo e, se houve configuração, a topologia alterada.
 
-use crate::sim::{run_ping, run_traceroute, DeviceTables};
+use crate::sim::{run_dhcp, run_ping, run_traceroute, DeviceTables};
 use crate::topology::{netmask, Device, DeviceKind, StaticRoute, Topology};
 use serde::{Deserialize, Serialize};
 use std::net::Ipv4Addr;
@@ -190,6 +190,7 @@ impl Ctx<'_> {
             ["ip", "route", ..] => self.add_route(args, line),
             ["no", "ip", "route", ..] => self.remove_route(args, line),
             ["ip", "default-gateway", ip] => self.set_gateway(Some(*ip)),
+            ["ip", "dhcp-pool", ..] => self.dhcp_pool(args, line),
             ["no", "ip", "default-gateway"] => self.set_gateway(None),
             _ => Err(unknown(line)),
         }
@@ -198,6 +199,7 @@ impl Ctx<'_> {
     fn interface_command(&mut self, w: &[&str], args: &[&str], line: &str) -> Result<(), String> {
         let port_id = self.session.interface.clone().ok_or("nenhuma interface selecionada")?;
         match w {
+            ["ip", "address", "dhcp"] => self.acquire_dhcp(&port_id),
             ["ip", "address", ip, mask] => {
                 let addr: Ipv4Addr = ip.parse().map_err(|_| format!("endereço inválido: {}", args[2]))?;
                 let prefix = parse_mask(*mask)?;
@@ -241,6 +243,56 @@ impl Ctx<'_> {
             .ok_or("interface inexistente")?;
         f(p);
         self.save(t)
+    }
+
+    fn dhcp_pool(&mut self, args: &[&str], line: &str) -> Result<(), String> {
+        if self.device().kind == DeviceKind::Switch {
+            return Err("pool DHCP não existe em switches".into());
+        }
+        // ip dhcp-pool <rede> <máscara> <início> <fim> <gateway>
+        if args.len() != 7 {
+            return Err(unknown(line));
+        }
+        let prefix = parse_mask(args[3])?;
+        let mut t = self.working();
+        t.devices[self.index].dhcp_pool = Some(crate::topology::DhcpPool {
+            network: args[2].to_string(),
+            prefix_len: prefix,
+            start: args[4].to_string(),
+            end: args[5].to_string(),
+            gateway: args[6].to_string(),
+        });
+        self.save(t)
+    }
+
+    /// `ip address dhcp`: obtém a concessão pelo protocolo e grava o endereço na interface.
+    fn acquire_dhcp(&mut self, port_id: &str) -> Result<(), String> {
+        let dev_id = self.device().id.clone();
+        let working = self.working();
+        let outcome = run_dhcp(&working, &dev_id, port_id)?;
+        match outcome.lease {
+            Some(lease) => {
+                let mut t = working;
+                let d = &mut t.devices[self.index];
+                if let Some(p) = d.ports.iter_mut().find(|p| p.id == port_id) {
+                    p.ip = Some(lease.ip.clone());
+                    p.prefix_len = Some(lease.prefix_len);
+                }
+                if let Some(gw) = &lease.gateway {
+                    d.gateway = Some(gw.clone());
+                }
+                self.output.push(format!("Concessão obtida: {}/{}", lease.ip, lease.prefix_len));
+                if let Some(gw) = &lease.gateway {
+                    self.output.push(format!("Gateway padrão: {gw}"));
+                }
+                self.save(t)
+            }
+            None => {
+                self.output.push(format!("% {}", outcome.error.unwrap_or_default()));
+                self.error = true;
+                Ok(())
+            }
+        }
     }
 
     fn set_gateway(&mut self, ip: Option<&str>) -> Result<(), String> {
@@ -504,6 +556,7 @@ mod tests {
             ports: (1..=4).map(|i| Port { id: format!("p{i}"), name: format!("Porta {i}"), ip: None, prefix_len: None, shutdown: false }).collect(),
             gateway: None,
             routes: Vec::new(),
+            dhcp_pool: None,
         }
     }
 
@@ -691,5 +744,29 @@ mod tests {
         t.devices[1].routes.push(crate::topology::StaticRoute { network: "10.0.9.0".into(), prefix_len: 24, next_hop: "10.0.1.2".into() });
         let out = execute(&t, "r", CliSession { mode: Mode::Config, interface: None }, "no ip route 10.0.9.0 255.255.255.0", None).unwrap();
         assert!(out.topology.unwrap().devices[1].routes.is_empty());
+    }
+
+    #[test]
+    fn dhcp_commands_configure_the_pool_and_apply_the_lease() {
+        let mut t = topo();
+        t.devices[1].ports[0].ip = Some("10.0.1.1".into());
+        t.devices[1].ports[0].prefix_len = Some(24);
+        let s = run(&t, "r", CliSession { mode: Mode::Config, interface: None }, "ip dhcp-pool 10.0.1.0 255.255.255.0 10.0.1.100 10.0.1.110 10.0.1.1");
+        let t2 = s.topology.expect("pool deve alterar a topologia");
+        let s = CliSession { mode: Mode::Interface, interface: Some("p1".into()) };
+        let out = execute(&t2, "a", s, "ip address dhcp", None).unwrap();
+        let t3 = out.topology.expect("concessão deve alterar a topologia");
+        assert_eq!(t3.devices[0].ports[0].ip.as_deref(), Some("10.0.1.100"));
+        assert_eq!(t3.devices[0].gateway.as_deref(), Some("10.0.1.1"));
+    }
+
+    #[test]
+    fn dhcp_pool_outside_a_connected_subnet_is_rejected_on_use() {
+        let t = topo();
+        let s = run(&t, "r", CliSession { mode: Mode::Config, interface: None }, "ip dhcp-pool 10.9.9.0 255.255.255.0 10.9.9.100 10.9.9.110 10.9.9.1");
+        let t2 = s.topology.expect("pool é válido como configuração");
+        let s = CliSession { mode: Mode::Interface, interface: Some("p1".into()) };
+        let out = execute(&t2, "a", s, "ip address dhcp", None).unwrap();
+        assert!(out.error);
     }
 }

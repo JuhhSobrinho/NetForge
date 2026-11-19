@@ -60,7 +60,7 @@ Nenhuma fase começa antes do gate da anterior ser cumprido.
 ### Fase 5 — Simulação visual (implementada em 2026-11-18: linha do tempo, animação de enlace e inspeção; sem exportação de sessão e sem animação por pacote individual)
 - Animação de pacotes, timeline, Packet Inspector, histórico.
 
-### Fase 6 — Protocolos adicionais
+### Fase 6 — Protocolos adicionais (em andamento: UDP e DHCP feitos; faltam DNS, TCP reduzido e VLAN)
 - DHCP, DNS, UDP, TCP (versão reduzida), VLAN. TCP completo é provavelmente fora do escopo; ver PROTOCOLS.md.
 
 ### Fase 7 — Recursos avançados

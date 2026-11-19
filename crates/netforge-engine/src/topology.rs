@@ -51,6 +51,17 @@ fn is_false(b: &bool) -> bool {
     !*b
 }
 
+/// Pool de um servidor DHCP: concede endereços de `start` a `end` na rede `network`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DhcpPool {
+    pub network: String,
+    pub prefix_len: u8,
+    pub start: String,
+    pub end: String,
+    pub gateway: String,
+}
+
 /// Rota estática de um roteador: `ip route <rede> <prefixo> <próximo salto>`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -75,6 +86,9 @@ pub struct Device {
     /// Rotas estáticas de um roteador.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub routes: Vec<StaticRoute>,
+    /// Pool DHCP de um servidor (`ip dhcp-pool`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dhcp_pool: Option<DhcpPool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -134,6 +148,17 @@ impl Topology {
                     return Err(format!("gateway padrão só existe em PCs e servidores: {}", d.name));
                 }
                 gw.parse::<Ipv4Addr>().map_err(|_| format!("gateway inválido: {gw}"))?;
+            }
+            if let Some(p) = &d.dhcp_pool {
+                if d.kind == DeviceKind::Switch {
+                    return Err(format!("pool DHCP não existe em switches: {}", d.name));
+                }
+                if p.prefix_len > 32 {
+                    return Err(format!("prefixo do pool fora de 0–32: {}", p.prefix_len));
+                }
+                for a in [&p.network, &p.start, &p.end, &p.gateway] {
+                    a.parse::<Ipv4Addr>().map_err(|_| format!("endereço inválido no pool DHCP: {a}"))?;
+                }
             }
             if !d.routes.is_empty() && d.kind != DeviceKind::Router {
                 return Err(format!("rotas estáticas só existem em roteadores: {}", d.name));
@@ -220,6 +245,7 @@ pub(crate) fn sample_pc(id: &str, ip: Option<&str>) -> Device {
         }],
         gateway: None,
         routes: Vec::new(),
+        dhcp_pool: None,
     }
 }
 
@@ -242,6 +268,7 @@ mod tests {
                     ports: (1..=8).map(|i| Port { id: format!("p{i}"), name: format!("Porta {i}"), ip: None, prefix_len: None, shutdown: false }).collect(),
                     gateway: None,
                     routes: Vec::new(),
+                    dhcp_pool: None,
                 },
             ],
             links: vec![

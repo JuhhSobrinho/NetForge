@@ -71,3 +71,10 @@ Implementados com escopo mínimo: Ethernet II, ARP (request/reply), switch com a
 Ethernet → ARP → IPv4 → ICMP. Esse é o conjunto para o primeiro gate (ping entre dois PCs via switch).
 
 Ver também: [REVERSE_ENGINEERING.md](REVERSE_ENGINEERING.md), [TESTING_STRATEGY.md](TESTING_STRATEGY.md).
+
+
+## Status após o início da Fase 6
+
+- **UDP (RFC 768):** implementado. Cabeçalho completo; checksum enviado como zero (permitido em IPv4). Serve de transporte para o DHCP.
+- **DHCP (RFC 2131):** implementado com escopo mínimo. Formato BOOTP com opções 1 (máscara), 3 (roteador), 50, 51, 53, 54. Fluxo DORA (Discover, Offer, Request, Ack) executado pela simulação; a concessão é gravada na interface como endereço estático. Limitações: só no mesmo domínio de broadcast (sem relay); o servidor precisa ter interface na sub-rede do pool; sem renovação de concessão.
+- **DNS, TCP reduzido e VLAN:** planejados, ainda não implementados.

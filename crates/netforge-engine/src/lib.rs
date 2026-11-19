@@ -6,6 +6,8 @@
 
 pub mod arp;
 pub mod cli;
+pub mod dhcp;
+pub mod udp;
 pub mod checksum;
 pub mod ethernet;
 pub mod icmp;

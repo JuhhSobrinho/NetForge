@@ -5,6 +5,7 @@ Formato baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/). 
 ## [Não lançado]
 
 ### Adicionado
+- Fase 6 (em andamento): UDP; DHCP com DORA pela simulação, pool em servidores (ip dhcp-pool) e cliente (ip address dhcp); ADR-019.
 - Fase 5: quadros decodificados por camada e enlace por transmissão no log do motor; linha do tempo com play, pausa, avançar, voltar, velocidade, filtro por protocolo e cursor; enlace animado no canvas durante a transmissão; inspetor com Ethernet, ARP, IPv4 e ICMP. ADR-018.
 - Fase 4: roteadores com encaminhamento, rotas estáticas, TTL e ICMP de erro; gateway padrão em PCs e servidores; interfaces desligáveis (shutdown); CLI por equipamento com modos e comandos show ip interface brief, show ip route, show arp, show mac address-table, ping, traceroute, ip address, ip route, ip default-gateway; ADR-017.
 - Fase 3: motor de simulação em Rust com modelo de topologia e validação; Ethernet II, ARP, IPv4 e ICMP echo (escopo mínimo); switch com aprendizado de MAC; ping com tempo virtual (1000 µs por link); captura PCAP da interface de origem; comandos `run_ping` e `export_pcap`; endereço IPv4 e prefixo por porta; painel de teste de ping. Ver ADR-016.

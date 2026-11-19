@@ -17,9 +17,11 @@ use crate::icmp::{
     encode_error, IcmpEcho, IcmpError, CODE_NET_UNREACHABLE, CODE_TTL_IN_TRANSIT, TYPE_DEST_UNREACHABLE,
     TYPE_ECHO_REPLY, TYPE_ECHO_REQUEST, TYPE_TIME_EXCEEDED,
 };
+use crate::dhcp::{DhcpMessage, CLIENT_PORT, MSG_ACK, MSG_DISCOVER, MSG_OFFER, MSG_REQUEST, OP_REPLY as DHCP_REPLY, OP_REQUEST as DHCP_REQUEST, SERVER_PORT};
 use crate::ipv4::{Ipv4Packet, DEFAULT_TTL, PROTO_ICMP};
+use crate::udp::{UdpDatagram, PROTO_UDP};
 use crate::pcap::PcapWriter;
-use crate::topology::{netmask, parse_address, Address, DeviceKind, Topology};
+use crate::topology::{netmask, parse_address, Address, DeviceKind, DhcpPool, Topology};
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap};
@@ -252,6 +254,7 @@ struct Route {
 }
 
 struct Runtime {
+    pool: Option<Pool>,
     id: String,
     port_ids: Vec<String>,
     name: String,
@@ -289,6 +292,7 @@ struct Simulation {
     capture: Option<Endpoint>,
     pcap: PcapWriter,
     echo: Option<EchoState>,
+    dhcp: Option<DhcpClient>,
 }
 
 /// Executa `count` echo requests de `source_id` para `target` e devolve o resultado.
@@ -480,6 +484,10 @@ impl Simulation {
                 let via: Ipv4Addr = gw.parse().map_err(|_| "gateway inválido")?;
                 routes.push(Route { net: 0, prefix: 0, via });
             }
+            let pool = match &d.dhcp_pool {
+                Some(p) => Some(build_pool(p, &ifaces)?),
+                None => None,
+            };
             devices.push(Runtime {
                 id: d.id.clone(),
                 port_ids: d.ports.iter().map(|p| p.id.clone()).collect(),
@@ -490,6 +498,7 @@ impl Simulation {
                 waiting: HashMap::new(),
                 mac_table: HashMap::new(),
                 routes,
+                pool,
             });
         }
         Ok(Simulation {
@@ -506,6 +515,7 @@ impl Simulation {
             capture: None,
             pcap: PcapWriter::new(),
             echo: None,
+            dhcp: None,
         })
     }
 
@@ -818,6 +828,10 @@ impl Simulation {
                 return;
             }
         };
+        if pkt.dst == Ipv4Addr::BROADCAST {
+            self.udp_broadcast_rx(at, &pkt);
+            return;
+        }
         if self.is_local(dev, pkt.dst) {
             if pkt.protocol != PROTO_ICMP {
                 self.push_log(self.now, dev, LogKind::Drop, format!("protocolo IP {} não suportado", pkt.protocol));
@@ -930,6 +944,229 @@ impl Simulation {
     }
 }
 
+/// Pool DHCP de um servidor já validado contra suas interfaces.
+struct Pool {
+    prefix: u8,
+    server_ip: Ipv4Addr,
+    start: u32,
+    end: u32,
+    gateway: Ipv4Addr,
+    leases: HashMap<Mac, Ipv4Addr>,
+}
+
+fn build_pool(p: &DhcpPool, ifaces: &[Iface]) -> Result<Pool, String> {
+    let net: Ipv4Addr = p.network.parse().map_err(|_| "pool DHCP: rede inválida")?;
+    let start: Ipv4Addr = p.start.parse().map_err(|_| "pool DHCP: início inválido")?;
+    let end: Ipv4Addr = p.end.parse().map_err(|_| "pool DHCP: fim inválido")?;
+    let gateway: Ipv4Addr = p.gateway.parse().map_err(|_| "pool DHCP: gateway inválido")?;
+    if u32::from(start) > u32::from(end) {
+        return Err("pool DHCP: início maior que o fim".into());
+    }
+    let mask = netmask(p.prefix_len);
+    let server_ip = ifaces
+        .iter()
+        .filter_map(|f| f.addr)
+        .find(|&(a, pr)| pr == p.prefix_len && u32::from(a) & mask == u32::from(net) & mask)
+        .map(|(a, _)| a)
+        .ok_or("pool DHCP sem interface do servidor na sub-rede")?;
+    Ok(Pool {
+        prefix: p.prefix_len,
+        server_ip,
+        start: u32::from(start),
+        end: u32::from(end),
+        gateway,
+        leases: HashMap::new(),
+    })
+}
+
+/// Endereço para o cliente: a concessão anterior, ou o primeiro livre do pool.
+fn allocate(pool: &Pool, mac: Mac) -> Option<Ipv4Addr> {
+    if let Some(ip) = pool.leases.get(&mac) {
+        return Some(*ip);
+    }
+    (pool.start..=pool.end)
+        .map(Ipv4Addr::from)
+        .find(|ip| !pool.leases.values().any(|used| used == ip))
+}
+
+struct DhcpClient {
+    dev: usize,
+    port: usize,
+    mac: Mac,
+    xid: u32,
+    lease: Option<DhcpMessage>,
+}
+
+/// Concessão obtida por DHCP.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DhcpLease {
+    pub ip: String,
+    pub prefix_len: u8,
+    pub gateway: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DhcpOutcome {
+    pub lease: Option<DhcpLease>,
+    pub error: Option<String>,
+    pub log: Vec<LogEntry>,
+    pub log_truncated: bool,
+}
+
+/// Executa o DORA (Discover, Offer, Request, Ack) para a interface `port_id` de `client_id`.
+/// O resultado é a concessão; o frontend aplica o endereço à interface.
+pub fn run_dhcp(topology: &Topology, client_id: &str, port_id: &str) -> Result<DhcpOutcome, String> {
+    topology.validate()?;
+    let dev = topology
+        .devices
+        .iter()
+        .position(|d| d.id == client_id)
+        .ok_or_else(|| "equipamento não existe".to_string())?;
+    if !topology.devices[dev].kind.is_host() {
+        return Err("somente PCs e servidores obtêm endereço por DHCP".into());
+    }
+    let port = topology.devices[dev]
+        .ports
+        .iter()
+        .position(|p| p.id == port_id)
+        .ok_or_else(|| "interface inexistente".to_string())?;
+    let mut sim = Simulation::build(topology)?;
+    if !sim.devices[dev].ifaces[port].up {
+        return Err("a interface precisa estar ligada e sem shutdown".into());
+    }
+    let mac = sim.devices[dev].ifaces[port].mac;
+    let xid = 0x4e46_0001;
+    sim.dhcp = Some(DhcpClient { dev, port, mac, xid, lease: None });
+    let discover = DhcpMessage::new(DHCP_REQUEST, MSG_DISCOVER, xid, mac).encode();
+    sim.broadcast_udp(dev, port, Ipv4Addr::UNSPECIFIED, CLIENT_PORT, SERVER_PORT, discover);
+    sim.run_until_dhcp_done();
+    let client = sim.dhcp.take().ok_or("estado DHCP perdido")?;
+    let lease = client.lease.map(|ack| DhcpLease {
+        ip: ack.yiaddr.to_string(),
+        prefix_len: ack.subnet_mask.map(|m| u32::from(m).leading_ones() as u8).unwrap_or(24),
+        gateway: ack.router.map(|g| g.to_string()),
+    });
+    let error = match lease {
+        Some(_) => None,
+        None => Some("sem resposta do servidor DHCP (verifique o pool e a ligação)".to_string()),
+    };
+    Ok(DhcpOutcome { lease, error, log: sim.log, log_truncated: sim.log_truncated })
+}
+
+impl Simulation {
+    fn run_until_dhcp_done(&mut self) {
+        loop {
+            if self.dhcp.as_ref().is_some_and(|c| c.lease.is_some()) {
+                break;
+            }
+            let Some(p) = self.queue.pop() else { break };
+            self.events += 1;
+            if self.events > MAX_EVENTS {
+                self.storm = true;
+                break;
+            }
+            self.now = p.at;
+            self.deliver(p.to, p.bytes);
+        }
+    }
+
+    /// Envia uma mensagem UDP em broadcast (255.255.255.255) pela interface dada.
+    fn broadcast_udp(&mut self, dev: usize, port: usize, src: Ipv4Addr, src_port: u16, dst_port: u16, payload: Vec<u8>) {
+        let udp = UdpDatagram { src_port, dst_port, payload }.encode();
+        let pkt = self.new_ipv4(src, Ipv4Addr::BROADCAST, PROTO_UDP, udp);
+        let Ok(ip_bytes) = pkt.encode() else { return };
+        let my_mac = self.devices[dev].ifaces[port].mac;
+        let bytes = Frame { dst: BROADCAST, src: my_mac, ethertype: ETHERTYPE_IPV4, payload: ip_bytes }.encode();
+        self.transmit(Endpoint { dev, port }, bytes, LogKind::Tx);
+    }
+
+    /// Mensagem UDP em broadcast recebida: direciona para o servidor (67) ou o cliente (68).
+    fn udp_broadcast_rx(&mut self, at: Endpoint, pkt: &Ipv4Packet) {
+        let dev = at.dev;
+        if pkt.protocol != PROTO_UDP {
+            self.push_log(self.now, dev, LogKind::Drop, "broadcast não suportado".into());
+            return;
+        }
+        let Ok(udp) = UdpDatagram::decode(&pkt.payload) else { return };
+        let Ok(msg) = DhcpMessage::decode(&udp.payload) else {
+            self.push_log(self.now, dev, LogKind::Drop, "UDP em broadcast sem DHCP".into());
+            return;
+        };
+        if udp.dst_port == SERVER_PORT {
+            self.dhcp_server_rx(at, msg);
+        } else if udp.dst_port == CLIENT_PORT {
+            self.dhcp_client_rx(at, msg);
+        }
+    }
+
+    fn dhcp_server_rx(&mut self, at: Endpoint, msg: DhcpMessage) {
+        let dev = at.dev;
+        let Some(pool) = self.devices[dev].pool.as_mut() else { return };
+        let server_ip = pool.server_ip;
+        let netmask_addr = Ipv4Addr::from(netmask(pool.prefix));
+        let gateway = pool.gateway;
+        let reply_type = match msg.msg_type {
+            MSG_DISCOVER => MSG_OFFER,
+            MSG_REQUEST => {
+                if msg.server_id != Some(server_ip) {
+                    return;
+                }
+                MSG_ACK
+            }
+            _ => return,
+        };
+        let ip = if msg.msg_type == MSG_REQUEST {
+            match msg.requested_ip {
+                Some(req) if allocate(pool, msg.chaddr) == Some(req) => {
+                    pool.leases.insert(msg.chaddr, req);
+                    req
+                }
+                _ => return,
+            }
+        } else {
+            match allocate(pool, msg.chaddr) {
+                Some(ip) => ip,
+                None => {
+                    self.push_log(self.now, dev, LogKind::Drop, "pool DHCP esgotado".into());
+                    return;
+                }
+            }
+        };
+        let mut reply = DhcpMessage::new(DHCP_REPLY, reply_type, msg.xid, msg.chaddr);
+        reply.yiaddr = ip;
+        reply.siaddr = server_ip;
+        reply.server_id = Some(server_ip);
+        reply.subnet_mask = Some(netmask_addr);
+        reply.router = Some(gateway);
+        reply.lease_time = Some(3600);
+        self.broadcast_udp(dev, at.port, server_ip, SERVER_PORT, CLIENT_PORT, reply.encode());
+    }
+
+    fn dhcp_client_rx(&mut self, at: Endpoint, msg: DhcpMessage) {
+        let Some(client) = self.dhcp.as_ref() else { return };
+        if client.dev != at.dev || client.port != at.port || msg.xid != client.xid || msg.chaddr != client.mac || msg.op != DHCP_REPLY {
+            return;
+        }
+        let (dev, port, xid, mac) = (client.dev, client.port, client.xid, client.mac);
+        match msg.msg_type {
+            MSG_OFFER => {
+                let mut req = DhcpMessage::new(DHCP_REQUEST, MSG_REQUEST, xid, mac);
+                req.server_id = msg.server_id;
+                req.requested_ip = Some(msg.yiaddr);
+                self.broadcast_udp(dev, port, Ipv4Addr::UNSPECIFIED, CLIENT_PORT, SERVER_PORT, req.encode());
+            }
+            MSG_ACK => {
+                if let Some(c) = self.dhcp.as_mut() {
+                    c.lease = Some(msg);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 /// Decodifica um quadro por camada. Retorna `None` se nem o Ethernet é válido.
 pub fn frame_info(bytes: &[u8]) -> Option<FrameInfo> {
     let frame = Frame::decode(bytes).ok()?;
@@ -960,6 +1197,14 @@ pub fn frame_info(bytes: &[u8]) -> Option<FrameInfo> {
             if let Ok(p) = Ipv4Packet::decode(&frame.payload) {
                 info.protocol = "IPv4".into();
                 info.ipv4 = Some(Ipv4Info { src: p.src.to_string(), dst: p.dst.to_string(), ttl: p.ttl, id: p.id, protocol: p.protocol });
+                if p.protocol == PROTO_UDP {
+                    info.protocol = "UDP".into();
+                    if let Ok(u) = UdpDatagram::decode(&p.payload) {
+                        if u.dst_port == SERVER_PORT || u.dst_port == CLIENT_PORT {
+                            info.protocol = "DHCP".into();
+                        }
+                    }
+                }
                 if p.protocol == PROTO_ICMP {
                     if let Ok(e) = IcmpEcho::decode(&p.payload) {
                         info.protocol = "ICMP".into();
@@ -1024,6 +1269,7 @@ mod tests {
             ports: (1..=8).map(|i| port(&format!("p{i}"), None, None)).collect(),
             gateway: None,
             routes: Vec::new(),
+            dhcp_pool: None,
         }
     }
 
@@ -1041,6 +1287,7 @@ mod tests {
             ports,
             gateway: None,
             routes,
+            dhcp_pool: None,
         }
     }
 
@@ -1349,5 +1596,74 @@ mod tests {
         assert_eq!(info.protocol, "ARP");
         assert_eq!(info.arp.unwrap().target_ip, "10.0.0.2");
         assert!(frame_info(&[0u8; 5]).is_none());
+    }
+
+    /// Cliente sem endereço ligado ao switch; servidor com pool 10.0.5.100–110 e gateway 10.0.5.1.
+    fn dhcp_topology(with_pool: bool) -> Topology {
+        let mut server = host("s", "10.0.5.1", 24, None);
+        if with_pool {
+            server.dhcp_pool = Some(crate::topology::DhcpPool {
+                network: "10.0.5.0".into(),
+                prefix_len: 24,
+                start: "10.0.5.100".into(),
+                end: "10.0.5.110".into(),
+                gateway: "10.0.5.1".into(),
+            });
+        }
+        let mut client = sample_pc("c", None);
+        client.ports[0].ip = None;
+        client.ports[0].prefix_len = None;
+        topo(
+            vec![client, server, switch("sw")],
+            vec![link("l1", ("c", "p1"), ("sw", "p1")), link("l2", ("s", "p1"), ("sw", "p2"))],
+        )
+    }
+
+    #[test]
+    fn dhcp_leases_the_first_free_address_through_a_switch() {
+        let out = run_dhcp(&dhcp_topology(true), "c", "p1").unwrap();
+        let lease = out.lease.expect("deve haver concessão");
+        assert_eq!(lease.ip, "10.0.5.100");
+        assert_eq!(lease.prefix_len, 24);
+        assert_eq!(lease.gateway.as_deref(), Some("10.0.5.1"));
+        assert!(out.error.is_none());
+    }
+
+    #[test]
+    fn dhcp_without_server_reports_no_answer() {
+        let out = run_dhcp(&dhcp_topology(false), "c", "p1").unwrap();
+        assert!(out.lease.is_none());
+        assert!(out.error.unwrap().contains("sem resposta do servidor DHCP"));
+    }
+
+    #[test]
+    fn address_from_dhcp_allows_a_ping_to_the_server() {
+        let mut t = dhcp_topology(true);
+        let lease = run_dhcp(&t, "c", "p1").unwrap().lease.unwrap();
+        t.devices[0].ports[0].ip = Some(lease.ip);
+        t.devices[0].ports[0].prefix_len = Some(lease.prefix_len);
+        let out = run_ping(&t, "c", "10.0.5.1", 1).unwrap();
+        assert!(out.error.is_none(), "{:?}", out.error);
+        assert_eq!(out.replies.len(), 1);
+    }
+
+    #[test]
+    fn dhcp_is_only_for_hosts() {
+        let err = run_dhcp(&dhcp_topology(true), "sw", "p1").unwrap_err();
+        assert!(err.contains("somente PCs e servidores"), "{err}");
+    }
+
+    #[test]
+    fn exhausted_pool_allocates_nothing() {
+        let pool = Pool {
+            prefix: 24,
+            server_ip: Ipv4Addr::new(10, 0, 5, 1),
+            start: u32::from(Ipv4Addr::new(10, 0, 5, 100)),
+            end: u32::from(Ipv4Addr::new(10, 0, 5, 100)),
+            gateway: Ipv4Addr::new(10, 0, 5, 1),
+            leases: HashMap::from([([2, 0, 0, 0, 0, 9], Ipv4Addr::new(10, 0, 5, 100))]),
+        };
+        assert_eq!(allocate(&pool, [2, 0, 0, 0, 0, 1]), None);
+        assert_eq!(allocate(&pool, [2, 0, 0, 0, 0, 9]), Some(Ipv4Addr::new(10, 0, 5, 100)));
     }
 }

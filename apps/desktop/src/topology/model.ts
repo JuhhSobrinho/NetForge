@@ -18,6 +18,15 @@ export interface Port {
   shutdown?: boolean
 }
 
+/** Pool de um servidor DHCP (`ip dhcp-pool`). */
+export interface DhcpPool {
+  network: string
+  prefixLen: number
+  start: string
+  end: string
+  gateway: string
+}
+
 /** Rota estática de um roteador (`ip route`). */
 export interface StaticRoute {
   network: string
@@ -86,6 +95,8 @@ export interface Device {
   gateway?: string
   /** Rotas estáticas de roteadores. */
   routes?: StaticRoute[]
+  /** Pool DHCP de um roteador ou servidor. */
+  dhcpPool?: DhcpPool
 }
 
 export interface PortRef {
@@ -270,6 +281,13 @@ export function parseTopology(json: string): Result<Topology> {
     if (d.gateway !== undefined) {
       if (d.kind !== 'pc' && d.kind !== 'server') return fail('Gateway padrão só existe em PCs e servidores.')
       if (!isValidIpv4(String(d.gateway))) return fail(`Gateway inválido: ${String(d.gateway)}.`)
+    }
+    if (d.dhcpPool !== undefined) {
+      const p = d.dhcpPool
+      if (d.kind === 'switch') return fail('Pool DHCP não existe em switches.')
+      if (!isValidIpv4(String(p?.network)) || !isValidIpv4(String(p?.start)) || !isValidIpv4(String(p?.end)) || !isValidIpv4(String(p?.gateway)))
+        return fail('Pool DHCP com endereço inválido.')
+      if (!Number.isInteger(p.prefixLen) || p.prefixLen < 0 || p.prefixLen > 32) return fail('Prefixo do pool DHCP inválido.')
     }
     if (d.routes !== undefined) {
       if (!Array.isArray(d.routes)) return fail('Rotas inválidas.')
