@@ -21,6 +21,7 @@ use crate::dns;
 use crate::dhcp::{DhcpMessage, CLIENT_PORT, MSG_ACK, MSG_DISCOVER, MSG_OFFER, MSG_REQUEST, OP_REPLY as DHCP_REPLY, OP_REQUEST as DHCP_REQUEST, SERVER_PORT};
 use crate::ipv4::{Ipv4Packet, DEFAULT_TTL, PROTO_ICMP};
 use crate::udp::{UdpDatagram, PROTO_UDP};
+use crate::rip::{self, RipEntry, RipMessage};
 use crate::tcp::{Segment, FLAG_ACK, FLAG_FIN, FLAG_PSH, FLAG_RST, FLAG_SYN, PROTO_TCP};
 use crate::pcap::PcapWriter;
 use crate::topology::{netmask, parse_address, Address, DeviceKind, DhcpPool, Topology, VlanMode};
@@ -260,6 +261,8 @@ struct Route {
 }
 
 struct Runtime {
+    rip: bool,
+    rip_routes: Vec<RipRoute>,
     tcp_listen: Vec<u16>,
     ports_vlan: Vec<PortVlan>,
     pool: Option<Pool>,
@@ -305,6 +308,7 @@ struct Simulation {
     dns: Option<DnsClient>,
     tcp_client: Option<TcpClient>,
     tcp_conns: Vec<TcpConn>,
+    rip_log: Vec<LogEntry>,
 }
 
 /// Executa `count` echo requests de `source_id` para `target` e devolve o resultado.
@@ -467,7 +471,14 @@ fn endpoint_of(topology: &Topology, index: &HashMap<&str, usize>, device: &str, 
 }
 
 impl Simulation {
+    /// Constrói a simulação e converge o RIP antes de qualquer execução.
     fn build(t: &Topology) -> Result<Simulation, String> {
+        let mut s = Self::build_raw(t)?;
+        s.converge_rip();
+        Ok(s)
+    }
+
+    fn build_raw(t: &Topology) -> Result<Simulation, String> {
         let index: HashMap<&str, usize> = t.devices.iter().enumerate().map(|(i, d)| (d.id.as_str(), i)).collect();
         let mut wires = HashMap::new();
         for l in &t.links {
@@ -525,6 +536,8 @@ impl Simulation {
                 waiting: HashMap::new(),
                 mac_table: HashMap::new(),
                 routes,
+                rip: d.rip,
+                rip_routes: Vec::new(),
                 tcp_listen: d.tcp_listen.clone(),
                 ports_vlan,
                 pool,
@@ -549,6 +562,7 @@ impl Simulation {
             dns: None,
             tcp_client: None,
             tcp_conns: Vec::new(),
+            rip_log: Vec::new(),
         })
     }
 
@@ -575,13 +589,15 @@ impl Simulation {
                 }
             }
         }
-        for r in &rt.routes {
+        let static_routes = rt.routes.iter().map(|r| (r.net, r.prefix, r.via));
+        let learned = rt.rip_routes.iter().filter_map(|r| r.via.map(|v| (r.net, r.prefix, v)));
+        for (net, prefix, via) in static_routes.chain(learned) {
             let egress = rt.ifaces.iter().enumerate().find(|(_, f)| {
-                f.up && f.addr.is_some_and(|(ip, p)| u32::from(r.via) & netmask(p) == u32::from(ip) & netmask(p))
+                f.up && f.addr.is_some_and(|(ip, p)| u32::from(via) & netmask(p) == u32::from(ip) & netmask(p))
             });
             if let Some((port, _)) = egress {
-                if u32::from(dst) & netmask(r.prefix) == r.net {
-                    consider((r.prefix, 1, port, r.via));
+                if u32::from(dst) & netmask(prefix) == net {
+                    consider((prefix, 1, port, via));
                 }
             }
         }
@@ -764,7 +780,7 @@ impl Simulation {
             }
         };
         let my_mac = self.devices[dev].ifaces[at.port].mac;
-        if frame.dst != my_mac && frame.dst != BROADCAST {
+        if frame.dst != my_mac && frame.dst != BROADCAST && frame.dst != RIP_MAC {
             self.push_log(self.now, dev, LogKind::Drop, "quadro não endereçado a esta interface".into());
             return;
         }
@@ -828,6 +844,10 @@ impl Simulation {
                 return;
             }
         };
+        if pkt.dst == rip::MULTICAST {
+            self.rip_rx(at, &pkt);
+            return;
+        }
         if pkt.dst == Ipv4Addr::BROADCAST {
             self.udp_broadcast_rx(at, &pkt);
             return;
@@ -1650,6 +1670,197 @@ impl Simulation {
     }
 }
 
+/// MAC de multicast do RIP (01:00:5e:00:00:09).
+const RIP_MAC: Mac = [0x01, 0x00, 0x5e, 0x00, 0x00, 0x09];
+
+/// Rota aprendida por RIP. Sem próximo salto, a rota é conectada (não aparece como aprendida).
+struct RipRoute {
+    net: u32,
+    prefix: u8,
+    metric: u8,
+    via: Option<Ipv4Addr>,
+}
+
+/// Rota aprendida por RIP ao final da convergência.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RipTableEntry {
+    pub device_id: String,
+    pub network: String,
+    pub prefix_len: u8,
+    pub metric: u8,
+    pub next_hop: String,
+}
+
+/// Tabelas RIP de uma topologia depois da convergência, com o log dessa convergência.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RipTables {
+    pub entries: Vec<RipTableEntry>,
+    pub log: Vec<LogEntry>,
+}
+
+/// Convergência RIP da topologia (sem ping). Usada pela CLI em `show ip route`.
+pub fn rip_tables(topology: &Topology) -> Result<RipTables, String> {
+    topology.validate()?;
+    let sim = Simulation::build(topology)?;
+    let mut entries = Vec::new();
+    for (dev, rt) in sim.devices.iter().enumerate() {
+        for r in rt.rip_routes.iter().filter(|r| r.via.is_some()) {
+            entries.push(RipTableEntry {
+                device_id: sim.device_id(dev),
+                network: Ipv4Addr::from(r.net).to_string(),
+                prefix_len: r.prefix,
+                metric: r.metric,
+                next_hop: r.via.map(|v| v.to_string()).unwrap_or_default(),
+            });
+        }
+    }
+    Ok(RipTables { entries, log: sim.rip_log })
+}
+
+impl Simulation {
+    fn device_id(&self, dev: usize) -> String {
+        self.devices[dev].id.clone()
+    }
+
+    /// Interface cuja sub-rede contém o próximo salto.
+    fn iface_of(&self, dev: usize, nh: Ipv4Addr) -> Option<usize> {
+        self.devices[dev].ifaces.iter().position(|f| {
+            f.up && f.addr.is_some_and(|(ip, p)| u32::from(nh) & netmask(p) == u32::from(ip) & netmask(p))
+        })
+    }
+
+    /// Anúncios de um roteador: uma mensagem por interface ativa, com split horizon
+    /// (rotas aprendidas por uma interface não são anunciadas por ela).
+    fn send_rip_updates(&mut self, dev: usize) {
+        for port in 0..self.devices[dev].ifaces.len() {
+            let f = &self.devices[dev].ifaces[port];
+            let (Some((ip, _)), true) = (f.addr, f.up) else { continue };
+            let mut entries = Vec::new();
+            for g in self.devices[dev].ifaces.iter() {
+                if let (true, Some((a, p))) = (g.up, g.addr) {
+                    entries.push(RipEntry {
+                        network: Ipv4Addr::from(u32::from(a) & netmask(p)),
+                        mask: Ipv4Addr::from(netmask(p)),
+                        next_hop: Ipv4Addr::UNSPECIFIED,
+                        metric: 1,
+                    });
+                }
+            }
+            for r in &self.devices[dev].rip_routes {
+                let Some(via) = r.via else { continue };
+                if self.iface_of(dev, via) == Some(port) || r.metric >= rip::INFINITY {
+                    continue;
+                }
+                entries.push(RipEntry {
+                    network: Ipv4Addr::from(r.net),
+                    mask: Ipv4Addr::from(netmask(r.prefix)),
+                    next_hop: Ipv4Addr::UNSPECIFIED,
+                    metric: r.metric,
+                });
+            }
+            let my_mac = self.devices[dev].ifaces[port].mac;
+            for chunk in entries.chunks(25) {
+                let Ok(payload) = RipMessage::response(chunk.to_vec()).encode() else { continue };
+                let udp = UdpDatagram { src_port: rip::PORT, dst_port: rip::PORT, payload }.encode();
+                let mut pkt = self.new_ipv4(ip, rip::MULTICAST, PROTO_UDP, udp);
+                pkt.ttl = 1;
+                let Ok(ip_bytes) = pkt.encode() else { continue };
+                let bytes = Frame { dst: RIP_MAC, src: my_mac, ethertype: ETHERTYPE_IPV4, payload: ip_bytes }.encode();
+                self.transmit(Endpoint { dev, port }, bytes, LogKind::Tx);
+            }
+        }
+    }
+
+    /// Mensagem RIP recebida por um roteador: atualiza a tabela e, se mudou, anuncia de novo.
+    fn rip_rx(&mut self, at: Endpoint, pkt: &Ipv4Packet) {
+        let dev = at.dev;
+        if !self.devices[dev].rip {
+            return;
+        }
+        let Ok(udp) = UdpDatagram::decode(&pkt.payload) else { return };
+        if udp.dst_port != rip::PORT {
+            return;
+        }
+        let msg = match RipMessage::decode(&udp.payload) {
+            Ok(m) => m,
+            Err(e) => {
+                self.push_log(self.now, dev, LogKind::Drop, format!("RIP inválido: {e}"));
+                return;
+            }
+        };
+        if msg.command != 2 {
+            return;
+        }
+        let mut changed = false;
+        for e in msg.entries {
+            let net = u32::from(e.network) & u32::from(e.mask);
+            let prefix = u32::from(e.mask).leading_ones() as u8;
+            let connected = self.devices[dev]
+                .ifaces
+                .iter()
+                .any(|f| f.up && f.addr.is_some_and(|(a, p)| p == prefix && u32::from(a) & netmask(p) == net));
+            if connected {
+                continue;
+            }
+            let metric = e.metric.saturating_add(1);
+            let rt = &mut self.devices[dev];
+            let existing = rt.rip_routes.iter().position(|r| r.net == net && r.prefix == prefix && r.via.is_some());
+            match existing {
+                Some(i) if rt.rip_routes[i].via == Some(pkt.src) => {
+                    if metric >= rip::INFINITY {
+                        rt.rip_routes.remove(i);
+                        changed = true;
+                    } else if rt.rip_routes[i].metric != metric {
+                        rt.rip_routes[i].metric = metric;
+                        changed = true;
+                    }
+                }
+                Some(i) => {
+                    if metric < rt.rip_routes[i].metric && metric < rip::INFINITY {
+                        rt.rip_routes[i] = RipRoute { net, prefix, metric, via: Some(pkt.src) };
+                        changed = true;
+                    }
+                }
+                None => {
+                    if metric < rip::INFINITY {
+                        rt.rip_routes.push(RipRoute { net, prefix, metric, via: Some(pkt.src) });
+                        changed = true;
+                    }
+                }
+            }
+        }
+        if changed {
+            self.send_rip_updates(dev);
+        }
+    }
+
+    /// Roda o RIP até a convergência (fila vazia). O log dessa fase vai para `rip_log`.
+    fn converge_rip(&mut self) {
+        if !self.devices.iter().any(|d| d.rip) {
+            return;
+        }
+        for dev in 0..self.devices.len() {
+            if self.devices[dev].rip {
+                self.send_rip_updates(dev);
+            }
+        }
+        let mut processed = 0u64;
+        while let Some(p) = self.queue.pop() {
+            processed += 1;
+            if processed > MAX_EVENTS {
+                break;
+            }
+            self.now = p.at;
+            self.deliver(p.to, p.bytes);
+        }
+        self.rip_log = std::mem::take(&mut self.log);
+        self.log_truncated = false;
+        self.now = 0;
+    }
+}
+
 /// Decodifica um quadro por camada. Retorna `None` se nem o Ethernet é válido.
 pub fn frame_info(bytes: &[u8]) -> Option<FrameInfo> {
     let frame = Frame::decode(bytes).ok()?;
@@ -1759,6 +1970,7 @@ mod tests {
             name_server: None,
             dns_records: Vec::new(),
             tcp_listen: Vec::new(),
+            rip: false,
         }
     }
 
@@ -1780,6 +1992,7 @@ mod tests {
             name_server: None,
             dns_records: Vec::new(),
             tcp_listen: Vec::new(),
+            rip: false,
         }
     }
 
@@ -2318,5 +2531,49 @@ mod tests {
         let out = run_ping(&two_pcs_and_switch(), "a", "10.0.0.2", 2).unwrap();
         assert_eq!(out.diagnostics.len(), 1);
         assert_eq!(out.diagnostics[0].severity, crate::diagnose::Severity::Info);
+    }
+
+    /// Três equipamentos em cadeia: PC A - R1 - R2 - PC B, com sub-redes 10.0.1/9/2 e gateways nos roteadores.
+    fn rip_chain(r2_rip: bool) -> Topology {
+        let mut a = host("a", "10.0.1.10", 24, Some("10.0.1.1"));
+        a.gateway = Some("10.0.1.1".into());
+        let mut b = host("b", "10.0.2.10", 24, Some("10.0.2.1"));
+        b.gateway = Some("10.0.2.1".into());
+        let mut r1 = router("r1", vec![port("p1", Some("10.0.1.1"), Some(24)), port("p2", Some("10.0.9.1"), Some(24))], vec![]);
+        let mut r2 = router("r2", vec![port("p1", Some("10.0.9.2"), Some(24)), port("p2", Some("10.0.2.1"), Some(24))], vec![]);
+        r1.rip = true;
+        r2.rip = r2_rip;
+        topo(
+            vec![a, b, r1, r2],
+            vec![
+                link("l1", ("a", "p1"), ("r1", "p1")),
+                link("l2", ("r1", "p2"), ("r2", "p1")),
+                link("l3", ("r2", "p2"), ("b", "p1")),
+            ],
+        )
+    }
+
+    #[test]
+    fn rip_converges_and_learns_the_remote_network() {
+        let tables = rip_tables(&rip_chain(true)).unwrap();
+        let r1 = tables.entries.iter().find(|e| e.device_id == "r1" && e.network == "10.0.2.0").expect("r1 aprende 10.0.2.0/24");
+        assert_eq!(r1.prefix_len, 24);
+        assert_eq!(r1.metric, 2);
+        assert_eq!(r1.next_hop, "10.0.9.2");
+        assert!(tables.log.iter().any(|e| e.detail.contains("224.0.0.9") || e.detail.contains("RIP") || e.kind == LogKind::Tx));
+    }
+
+    #[test]
+    fn ping_crosses_routers_using_only_rip_routes() {
+        let out = run_ping(&rip_chain(true), "a", "10.0.2.10", 1).unwrap();
+        assert!(out.error.is_none(), "{:?}", out.error);
+        assert_eq!(out.replies.len(), 1);
+    }
+
+    #[test]
+    fn without_rip_on_the_far_router_the_ping_fails() {
+        let out = run_ping(&rip_chain(false), "a", "10.0.2.10", 1).unwrap();
+        assert!(out.replies.is_empty());
+        assert!(out.error.is_some());
     }
 }

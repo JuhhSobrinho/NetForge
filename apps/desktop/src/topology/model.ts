@@ -113,6 +113,8 @@ export interface Device {
   dnsRecords?: DnsRecord[]
   /** Portas TCP em escuta (`ip tcp-listen`). */
   tcpListen?: number[]
+  /** RIPv2 ativo no roteador (`router rip`). */
+  rip?: boolean
 }
 
 export interface PortRef {
@@ -317,6 +319,10 @@ export function parseTopology(json: string): Result<Topology> {
       for (const p of d.tcpListen) {
         if (!Number.isInteger(p) || p < 1 || p > 65535) return fail('Porta TCP fora de 1–65535.')
       }
+    }
+    if (d.rip !== undefined) {
+      if (typeof d.rip !== 'boolean') return fail('Estado de RIP inválido.')
+      if (d.rip && d.kind !== 'router') return fail('RIP só existe em roteadores.')
     }
     if (d.nameServer !== undefined) {
       if (d.kind !== 'pc' && d.kind !== 'server') return fail('Servidor de nomes só existe em PCs e servidores.')

@@ -63,7 +63,7 @@ Nenhuma fase começa antes do gate da anterior ser cumprido.
 ### Fase 6 — Protocolos adicionais (concluída em 2026-11-19; roteamento dinâmico RIP/OSPF permanece na fase 7, conforme PROTOCOLS.md)
 - DHCP, DNS, UDP, TCP (versão reduzida), VLAN. TCP completo é provavelmente fora do escopo; ver PROTOCOLS.md.
 
-### Fase 7 — Recursos avançados (em andamento: diagnóstico determinístico do ping feito; faltam RIP/OSPF, laboratórios, plugins e integrações externas)
+### Fase 7 — Recursos avançados (em andamento: diagnóstico do ping e RIPv2 feitos; faltam OSPF, laboratórios, plugins e integrações externas)
 - Plugins, IA, laboratórios, integrações (Docker/QEMU avaliados aqui).
 
 ### Fase 8 — Estabilização

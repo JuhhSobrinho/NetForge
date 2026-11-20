@@ -80,3 +80,10 @@ Ver também: [REVERSE_ENGINEERING.md](REVERSE_ENGINEERING.md), [TESTING_STRATEGY
 - **DNS (RFC 1035):** implementado com escopo mínimo: consultas tipo A, classe IN, sobre UDP porta 53. Servidor configurado com registros (ip dns-record); responde NXDOMAIN para nomes desconhecidos e fica sem resposta se não tiver registros. Sem cache, sem recursão, sem compressão de nomes na escrita.
 - **VLAN (802.1Q):** implementado. Portas de acesso (uma VLAN, quadros sem marca) e portas tronco (quadros marcados entre switches; sem marca, o quadro vai para a VLAN 1). Aprendizado de MAC por VLAN; inundação restrita à VLAN. Sem STP, sem VTP, sem VLAN nativa configurável.
 - **TCP reduzido:** implementado com escopo mínimo: handshake SYN/SYN-ACK/ACK, dados com eco, fechamento com FIN e RST para porta sem escuta; checksum com pseudo-cabeçalho. Sem retransmissão, sem janela dinâmica, sem opções, sem controle de congestionamento. Servidores escutam portas configuradas com ip tcp-listen; o cliente usa tcp-test.
+
+
+## Status após o início da Fase 7
+
+- **Diagnóstico do ping:** implementado (regras determinísticas, sem LLM; ver ADR-010).
+- **RIPv2 (RFC 2453):** implementado com escopo mínimo. Mensagens de resposta com máscara, próximo salto e métrica (16 = inalcançável), enviadas ao multicast 224.0.0.9 com TTL 1. Roteadores com `router rip` aprendem as rotas das interfaces vizinhas e anunciam com split horizon. A convergência roda antes de cada execução, em tempo virtual, e seu log não aparece na linha do tempo do ping. Limitações: sem temporizadores de 30 s nem de expiração de rota, sem poison reverse, sem distância administrativa (rotas RIP e estáticas de mesmo prefixo competem pela ordem de preferência do motor).
+- **OSPF, laboratórios, plugins e integrações externas:** planejados, ainda não implementados.

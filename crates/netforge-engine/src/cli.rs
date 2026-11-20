@@ -5,7 +5,7 @@
 //! O motor não guarda sessão: o frontend envia a topologia atual, o modo e a linha digitada,
 //! e recebe a saída, o novo modo e, se houve configuração, a topologia alterada.
 
-use crate::sim::{run_dhcp, run_dns, run_ping, run_tcp, run_traceroute, DeviceTables};
+use crate::sim::{rip_tables, run_dhcp, run_dns, run_ping, run_tcp, run_traceroute, DeviceTables};
 use crate::topology::{netmask, Device, DeviceKind, StaticRoute, Topology, VlanMode};
 use serde::{Deserialize, Serialize};
 use std::net::Ipv4Addr;
@@ -198,6 +198,8 @@ impl Ctx<'_> {
             ["no", "ip", "name-server"] => self.name_server(None),
             ["ip", "dns-record", name, ip] => self.dns_record(name, ip),
             ["ip", "tcp-listen", port] => self.tcp_listen(port),
+            ["router", "rip"] => self.set_rip(true),
+            ["no", "router", "rip"] => self.set_rip(false),
             ["no", "ip", "default-gateway"] => self.set_gateway(None),
             _ => Err(unknown(line)),
         }
@@ -293,6 +295,15 @@ impl Ctx<'_> {
     }
 
     /// `nslookup <nome>`: consulta o servidor de nomes configurado.
+    fn set_rip(&mut self, on: bool) -> Result<(), String> {
+        if self.device().kind != DeviceKind::Router {
+            return Err("RIP só existe em roteadores".into());
+        }
+        let mut t = self.working();
+        t.devices[self.index].rip = on;
+        self.save(t)
+    }
+
     fn tcp_listen(&mut self, port: &str) -> Result<(), String> {
         if self.device().kind == DeviceKind::Switch {
             return Err("portas TCP não existem em switches".into());
@@ -521,6 +532,13 @@ impl Ctx<'_> {
         for r in &dev.routes {
             self.output.push(format!("S    {}/{} via {}", r.network, r.prefix_len, r.next_hop));
         }
+        if dev.rip {
+            if let Ok(tables) = rip_tables(self.topology) {
+                for e in tables.entries.iter().filter(|e| e.device_id == dev.id) {
+                    self.output.push(format!("R    {}/{} [120/{}] via {}", e.network, e.prefix_len, e.metric, e.next_hop));
+                }
+            }
+        }
         Ok(())
     }
 
@@ -678,6 +696,7 @@ mod tests {
             name_server: None,
             dns_records: Vec::new(),
             tcp_listen: Vec::new(),
+            rip: false,
         }
     }
 
@@ -928,6 +947,7 @@ mod tests {
             name_server: None,
             dns_records: Vec::new(),
             tcp_listen: Vec::new(),
+            rip: false,
         });
         let s = CliSession { mode: Mode::Interface, interface: Some("p2".into()) };
         let out = execute(&t, "sw", s.clone(), "vlan access 10", None).unwrap();
@@ -961,5 +981,17 @@ mod tests {
         let out = run(&t3, "a", CliSession::default(), "tcp-test 10.0.1.1 7 olá");
         assert!(out.output.iter().any(|l| l == "Eco: olá"), "{:?}", out.output);
         assert!(out.output.iter().any(|l| l == "Conexão encerrada"), "{:?}", out.output);
+    }
+
+    #[test]
+    fn router_rip_command_enables_rip_and_shows_learned_routes() {
+        let t = topo();
+        let out = run(&t, "r", CliSession { mode: Mode::Config, interface: None }, "router rip");
+        let t2 = out.topology.expect("router rip altera a topologia");
+        assert!(t2.devices[1].rip);
+        let out = run(&t2, "r", CliSession { mode: Mode::Privileged, interface: None }, "show ip route");
+        assert!(!out.error);
+        let out = run(&t2, "a", CliSession { mode: Mode::Config, interface: None }, "router rip");
+        assert!(out.error, "RIP em host deve ser recusado");
     }
 }

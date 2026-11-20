@@ -119,6 +119,9 @@ pub struct Device {
     /// Portas TCP em escuta (`ip tcp-listen`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tcp_listen: Vec<u16>,
+    /// RIPv2 ativo no roteador (`router rip`).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub rip: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -205,6 +208,9 @@ impl Topology {
             }
             if !d.tcp_listen.is_empty() && d.kind == DeviceKind::Switch {
                 return Err(format!("portas TCP não existem em switches: {}", d.name));
+            }
+            if d.rip && d.kind != DeviceKind::Router {
+                return Err(format!("RIP só existe em roteadores: {}", d.name));
             }
             if d.tcp_listen.contains(&0) {
                 return Err("porta TCP 0 não é válida".into());
@@ -311,6 +317,7 @@ pub(crate) fn sample_pc(id: &str, ip: Option<&str>) -> Device {
         name_server: None,
         dns_records: Vec::new(),
             tcp_listen: Vec::new(),
+            rip: false,
     }
 }
 
@@ -337,6 +344,7 @@ mod tests {
                     name_server: None,
                     dns_records: Vec::new(),
             tcp_listen: Vec::new(),
+            rip: false,
                 },
             ],
             links: vec![

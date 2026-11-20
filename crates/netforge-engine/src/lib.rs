@@ -15,6 +15,7 @@ pub mod ethernet;
 pub mod icmp;
 pub mod ipv4;
 pub mod pcap;
+pub mod rip;
 pub mod sim;
 pub mod tcp;
 pub mod topology;
