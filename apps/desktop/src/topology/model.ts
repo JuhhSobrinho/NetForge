@@ -115,6 +115,8 @@ export interface Device {
   tcpListen?: number[]
   /** RIPv2 ativo no roteador (`router rip`). */
   rip?: boolean
+  /** OSPFv2 ativo no roteador (`router ospf`). */
+  ospf?: boolean
 }
 
 export interface PortRef {
@@ -319,6 +321,10 @@ export function parseTopology(json: string): Result<Topology> {
       for (const p of d.tcpListen) {
         if (!Number.isInteger(p) || p < 1 || p > 65535) return fail('Porta TCP fora de 1–65535.')
       }
+    }
+    if (d.ospf !== undefined) {
+      if (typeof d.ospf !== 'boolean') return fail('Estado de OSPF inválido.')
+      if (d.ospf && d.kind !== 'router') return fail('OSPF só existe em roteadores.')
     }
     if (d.rip !== undefined) {
       if (typeof d.rip !== 'boolean') return fail('Estado de RIP inválido.')

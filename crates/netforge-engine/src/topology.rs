@@ -122,6 +122,9 @@ pub struct Device {
     /// RIPv2 ativo no roteador (`router rip`).
     #[serde(default, skip_serializing_if = "is_false")]
     pub rip: bool,
+    /// OSPFv2 ativo no roteador (`router ospf`).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub ospf: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -208,6 +211,9 @@ impl Topology {
             }
             if !d.tcp_listen.is_empty() && d.kind == DeviceKind::Switch {
                 return Err(format!("portas TCP não existem em switches: {}", d.name));
+            }
+            if d.ospf && d.kind != DeviceKind::Router {
+                return Err(format!("OSPF só existe em roteadores: {}", d.name));
             }
             if d.rip && d.kind != DeviceKind::Router {
                 return Err(format!("RIP só existe em roteadores: {}", d.name));
@@ -318,6 +324,7 @@ pub(crate) fn sample_pc(id: &str, ip: Option<&str>) -> Device {
         dns_records: Vec::new(),
             tcp_listen: Vec::new(),
             rip: false,
+            ospf: false,
     }
 }
 
@@ -345,6 +352,7 @@ mod tests {
                     dns_records: Vec::new(),
             tcp_listen: Vec::new(),
             rip: false,
+            ospf: false,
                 },
             ],
             links: vec![

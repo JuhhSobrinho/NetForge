@@ -87,3 +87,8 @@ Ver também: [REVERSE_ENGINEERING.md](REVERSE_ENGINEERING.md), [TESTING_STRATEGY
 - **Diagnóstico do ping:** implementado (regras determinísticas, sem LLM; ver ADR-010).
 - **RIPv2 (RFC 2453):** implementado com escopo mínimo. Mensagens de resposta com máscara, próximo salto e métrica (16 = inalcançável), enviadas ao multicast 224.0.0.9 com TTL 1. Roteadores com `router rip` aprendem as rotas das interfaces vizinhas e anunciam com split horizon. A convergência roda antes de cada execução, em tempo virtual, e seu log não aparece na linha do tempo do ping. Limitações: sem temporizadores de 30 s nem de expiração de rota, sem poison reverse, sem distância administrativa (rotas RIP e estáticas de mesmo prefixo competem pela ordem de preferência do motor).
 - **OSPF, laboratórios, plugins e integrações externas:** planejados, ainda não implementados.
+
+
+## OSPF (início da Fase 7)
+
+- **OSPFv2 (RFC 2328) reduzido:** implementado com escopo mínimo, área única. Hello (tipo 1) em 224.0.0.5 com TTL 1 forma adjacências bidirecionais; LSAs de roteador (tipo 1) são originados, inundados e armazenados com número de sequência. O SPF (Dijkstra com custo unitário, portanto BFS) calcula as rotas, instaladas com distância 110 na exibição. Limitações: sem DD/LSR/LSAck, sem eleição de DR/BDR, sem áreas, sem LSAs de rede nem de outros tipos, checksum com a soma da Internet em vez de Fletcher, custo fixo 1 por enlace, sem temporizadores de envelhecimento. A convergência roda antes de cada execução, como no RIP.

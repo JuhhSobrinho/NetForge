@@ -61,6 +61,7 @@ fn device(id: &str, kind: DeviceKind, name: &str, ports: usize) -> Device {
         dns_records: Vec::new(),
         tcp_listen: Vec::new(),
         rip: false,
+        ospf: false,
     }
 }
 

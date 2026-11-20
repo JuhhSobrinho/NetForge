@@ -16,6 +16,7 @@ pub mod icmp;
 pub mod ipv4;
 pub mod pcap;
 pub mod labs;
+pub mod ospf;
 pub mod rip;
 pub mod sim;
 pub mod tcp;

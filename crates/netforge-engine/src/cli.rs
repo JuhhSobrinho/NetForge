@@ -5,7 +5,7 @@
 //! O motor não guarda sessão: o frontend envia a topologia atual, o modo e a linha digitada,
 //! e recebe a saída, o novo modo e, se houve configuração, a topologia alterada.
 
-use crate::sim::{rip_tables, run_dhcp, run_dns, run_ping, run_tcp, run_traceroute, DeviceTables};
+use crate::sim::{ospf_tables, rip_tables, run_dhcp, run_dns, run_ping, run_tcp, run_traceroute, DeviceTables};
 use crate::topology::{netmask, Device, DeviceKind, StaticRoute, Topology, VlanMode};
 use serde::{Deserialize, Serialize};
 use std::net::Ipv4Addr;
@@ -199,6 +199,8 @@ impl Ctx<'_> {
             ["ip", "dns-record", name, ip] => self.dns_record(name, ip),
             ["ip", "tcp-listen", port] => self.tcp_listen(port),
             ["router", "rip"] => self.set_rip(true),
+            ["router", "ospf"] => self.set_ospf(true),
+            ["no", "router", "ospf"] => self.set_ospf(false),
             ["no", "router", "rip"] => self.set_rip(false),
             ["no", "ip", "default-gateway"] => self.set_gateway(None),
             _ => Err(unknown(line)),
@@ -295,6 +297,15 @@ impl Ctx<'_> {
     }
 
     /// `nslookup <nome>`: consulta o servidor de nomes configurado.
+    fn set_ospf(&mut self, on: bool) -> Result<(), String> {
+        if self.device().kind != DeviceKind::Router {
+            return Err("OSPF só existe em roteadores".into());
+        }
+        let mut t = self.working();
+        t.devices[self.index].ospf = on;
+        self.save(t)
+    }
+
     fn set_rip(&mut self, on: bool) -> Result<(), String> {
         if self.device().kind != DeviceKind::Router {
             return Err("RIP só existe em roteadores".into());
@@ -532,6 +543,13 @@ impl Ctx<'_> {
         for r in &dev.routes {
             self.output.push(format!("S    {}/{} via {}", r.network, r.prefix_len, r.next_hop));
         }
+        if dev.ospf {
+            if let Ok(tables) = ospf_tables(self.topology) {
+                for e in tables.entries.iter().filter(|e| e.device_id == dev.id) {
+                    self.output.push(format!("O    {}/{} [110/{}] via {}", e.network, e.prefix_len, e.metric, e.next_hop));
+                }
+            }
+        }
         if dev.rip {
             if let Ok(tables) = rip_tables(self.topology) {
                 for e in tables.entries.iter().filter(|e| e.device_id == dev.id) {
@@ -697,6 +715,7 @@ mod tests {
             dns_records: Vec::new(),
             tcp_listen: Vec::new(),
             rip: false,
+            ospf: false,
         }
     }
 
@@ -948,6 +967,7 @@ mod tests {
             dns_records: Vec::new(),
             tcp_listen: Vec::new(),
             rip: false,
+            ospf: false,
         });
         let s = CliSession { mode: Mode::Interface, interface: Some("p2".into()) };
         let out = execute(&t, "sw", s.clone(), "vlan access 10", None).unwrap();

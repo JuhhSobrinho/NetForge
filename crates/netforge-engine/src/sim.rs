@@ -21,6 +21,7 @@ use crate::dns;
 use crate::dhcp::{DhcpMessage, CLIENT_PORT, MSG_ACK, MSG_DISCOVER, MSG_OFFER, MSG_REQUEST, OP_REPLY as DHCP_REPLY, OP_REQUEST as DHCP_REQUEST, SERVER_PORT};
 use crate::ipv4::{Ipv4Packet, DEFAULT_TTL, PROTO_ICMP};
 use crate::udp::{UdpDatagram, PROTO_UDP};
+use crate::ospf::{self, OspfMessage, RouterLsa, PROTO_OSPF};
 use crate::rip::{self, RipEntry, RipMessage};
 use crate::tcp::{Segment, FLAG_ACK, FLAG_FIN, FLAG_PSH, FLAG_RST, FLAG_SYN, PROTO_TCP};
 use crate::pcap::PcapWriter;
@@ -263,6 +264,12 @@ struct Route {
 struct Runtime {
     rip: bool,
     rip_routes: Vec<RipRoute>,
+    ospf: bool,
+    ospf_adjacencies: Vec<OspfAdj>,
+    ospf_heard: Vec<(usize, Ipv4Addr)>,
+    ospf_lsdb: HashMap<Ipv4Addr, ospf::RouterLsa>,
+    ospf_seq: u32,
+    ospf_routes: Vec<RipRoute>,
     tcp_listen: Vec<u16>,
     ports_vlan: Vec<PortVlan>,
     pool: Option<Pool>,
@@ -475,6 +482,7 @@ impl Simulation {
     fn build(t: &Topology) -> Result<Simulation, String> {
         let mut s = Self::build_raw(t)?;
         s.converge_rip();
+        s.converge_ospf();
         Ok(s)
     }
 
@@ -538,6 +546,12 @@ impl Simulation {
                 routes,
                 rip: d.rip,
                 rip_routes: Vec::new(),
+                ospf: d.ospf,
+                ospf_adjacencies: Vec::new(),
+                ospf_heard: Vec::new(),
+                ospf_lsdb: HashMap::new(),
+                ospf_seq: 0,
+                ospf_routes: Vec::new(),
                 tcp_listen: d.tcp_listen.clone(),
                 ports_vlan,
                 pool,
@@ -590,7 +604,11 @@ impl Simulation {
             }
         }
         let static_routes = rt.routes.iter().map(|r| (r.net, r.prefix, r.via));
-        let learned = rt.rip_routes.iter().filter_map(|r| r.via.map(|v| (r.net, r.prefix, v)));
+        let learned = rt
+            .rip_routes
+            .iter()
+            .chain(rt.ospf_routes.iter())
+            .filter_map(|r| r.via.map(|v| (r.net, r.prefix, v)));
         for (net, prefix, via) in static_routes.chain(learned) {
             let egress = rt.ifaces.iter().enumerate().find(|(_, f)| {
                 f.up && f.addr.is_some_and(|(ip, p)| u32::from(via) & netmask(p) == u32::from(ip) & netmask(p))
@@ -780,7 +798,7 @@ impl Simulation {
             }
         };
         let my_mac = self.devices[dev].ifaces[at.port].mac;
-        if frame.dst != my_mac && frame.dst != BROADCAST && frame.dst != RIP_MAC {
+        if frame.dst != my_mac && frame.dst != BROADCAST && frame.dst != RIP_MAC && frame.dst != OSPF_MAC {
             self.push_log(self.now, dev, LogKind::Drop, "quadro não endereçado a esta interface".into());
             return;
         }
@@ -844,6 +862,10 @@ impl Simulation {
                 return;
             }
         };
+        if pkt.dst == ospf::ALL_ROUTERS {
+            self.ospf_rx(at, &pkt);
+            return;
+        }
         if pkt.dst == rip::MULTICAST {
             self.rip_rx(at, &pkt);
             return;
@@ -1861,6 +1883,258 @@ impl Simulation {
     }
 }
 
+/// MAC de multicast do OSPF (01:00:5e:00:00:05).
+const OSPF_MAC: Mac = [0x01, 0x00, 0x5e, 0x00, 0x00, 0x05];
+
+/// Adjacência OSPF: vizinho bidirecional numa porta.
+struct OspfAdj {
+    port: usize,
+    rid: Ipv4Addr,
+    ip: Ipv4Addr,
+}
+
+/// Tabelas OSPF de uma topologia após a convergência, com o log dessa fase.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OspfTables {
+    pub entries: Vec<RipTableEntry>,
+    pub log: Vec<LogEntry>,
+}
+
+/// Rotas OSPF calculadas pelo SPF de cada roteador (`RipTableEntry`: rede, métrica, próximo salto).
+pub fn ospf_tables(topology: &Topology) -> Result<OspfTables, String> {
+    topology.validate()?;
+    let sim = Simulation::build(topology)?;
+    let mut entries = Vec::new();
+    for (dev, rt) in sim.devices.iter().enumerate() {
+        for r in rt.ospf_routes.iter() {
+            if let Some(via) = r.via {
+                entries.push(RipTableEntry {
+                    device_id: sim.device_id(dev),
+                    network: Ipv4Addr::from(r.net).to_string(),
+                    prefix_len: r.prefix,
+                    metric: r.metric,
+                    next_hop: via.to_string(),
+                });
+            }
+        }
+    }
+    Ok(OspfTables { entries, log: sim.rip_log })
+}
+
+impl Simulation {
+    /// Identificador do roteador: o maior endereço de suas interfaces.
+    fn ospf_router_id(&self, dev: usize) -> Option<Ipv4Addr> {
+        self.devices[dev].ifaces.iter().filter_map(|f| f.addr.map(|(a, _)| a)).max()
+    }
+
+    /// Hello numa interface: lista os roteadores ouvidos nela (para o vizinho reconhecer a adjacência).
+    fn send_ospf_hello(&mut self, dev: usize, port: usize) {
+        let (Some(rid), Some((ip, prefix))) = (self.ospf_router_id(dev), self.devices[dev].ifaces[port].addr) else { return };
+        let neighbors: Vec<Ipv4Addr> = self.devices[dev].ospf_heard.iter().filter(|(p, _)| *p == port).map(|(_, r)| *r).collect();
+        let hello = OspfMessage::Hello(ospf::Hello { router_id: rid, area: Ipv4Addr::UNSPECIFIED, mask: Ipv4Addr::from(netmask(prefix)), neighbors });
+        self.send_ospf(dev, port, ip, hello.encode());
+    }
+
+    /// Envia um pacote OSPF em multicast (224.0.0.5, TTL 1) pela porta.
+    fn send_ospf(&mut self, dev: usize, port: usize, src: Ipv4Addr, payload: Vec<u8>) {
+        if !self.devices[dev].ifaces[port].up {
+            return;
+        }
+        let mut pkt = self.new_ipv4(src, ospf::ALL_ROUTERS, PROTO_OSPF, payload);
+        pkt.ttl = 1;
+        let Ok(ip_bytes) = pkt.encode() else { return };
+        let my_mac = self.devices[dev].ifaces[port].mac;
+        let bytes = Frame { dst: OSPF_MAC, src: my_mac, ethertype: ETHERTYPE_IPV4, payload: ip_bytes }.encode();
+        self.transmit(Endpoint { dev, port }, bytes, LogKind::Tx);
+    }
+
+    /// Gera o LSA do roteador a partir de adjacências e redes conectadas, com número de sequência novo.
+    fn originate_lsa(&mut self, dev: usize) -> Option<RouterLsa> {
+        let rid = self.ospf_router_id(dev)?;
+        let mut links = Vec::new();
+        for adj in &self.devices[dev].ospf_adjacencies {
+            let our_ip = self.devices[dev].ifaces[adj.port].addr.map(|a| a.0).unwrap_or(Ipv4Addr::UNSPECIFIED);
+            links.push(ospf::RouterLink { kind: ospf::LINK_POINT_TO_POINT, id: adj.rid, data: our_ip, metric: 1 });
+        }
+        for f in &self.devices[dev].ifaces {
+            if let (true, Some((ip, p))) = (f.up, f.addr) {
+                links.push(ospf::RouterLink {
+                    kind: ospf::LINK_STUB,
+                    id: Ipv4Addr::from(u32::from(ip) & netmask(p)),
+                    data: Ipv4Addr::from(netmask(p)),
+                    metric: 1,
+                });
+            }
+        }
+        self.devices[dev].ospf_seq += 1;
+        let lsa = RouterLsa { router_id: rid, seq: self.devices[dev].ospf_seq, links };
+        self.devices[dev].ospf_lsdb.insert(rid, lsa.clone());
+        Some(lsa)
+    }
+
+    /// Envia LSAs em atualização por todas as adjacências, exceto pela porta de chegada.
+    fn flood(&mut self, dev: usize, lsas: Vec<RouterLsa>, except: Option<usize>) {
+        let Some(src) = self.ospf_router_id(dev) else { return };
+        let ports: Vec<usize> = self.devices[dev].ospf_adjacencies.iter().map(|a| a.port).filter(|p| Some(*p) != except).collect();
+        for port in ports {
+            let msg = OspfMessage::Update { router_id: src, lsas: lsas.clone() };
+            if let Some((ip, _)) = self.devices[dev].ifaces[port].addr {
+                self.send_ospf(dev, port, ip, msg.encode());
+            }
+        }
+    }
+
+    fn ospf_rx(&mut self, at: Endpoint, pkt: &Ipv4Packet) {
+        let dev = at.dev;
+        if !self.devices[dev].ospf || pkt.protocol != PROTO_OSPF {
+            return;
+        }
+        let msg = match OspfMessage::decode(&pkt.payload) {
+            Ok(m) => m,
+            Err(e) => {
+                self.push_log(self.now, dev, LogKind::Drop, format!("OSPF inválido: {e}"));
+                return;
+            }
+        };
+        let Some(own) = self.ospf_router_id(dev) else { return };
+        match msg {
+            OspfMessage::Hello(h) => {
+                if h.router_id == own {
+                    return;
+                }
+                let mut new_heard = false;
+                if !self.devices[dev].ospf_heard.contains(&(at.port, h.router_id)) {
+                    self.devices[dev].ospf_heard.push((at.port, h.router_id));
+                    new_heard = true;
+                }
+                let two_way = h.neighbors.contains(&own);
+                let known = self.devices[dev].ospf_adjacencies.iter().any(|a| a.rid == h.router_id && a.port == at.port);
+                if two_way && !known {
+                    self.devices[dev].ospf_adjacencies.push(OspfAdj { port: at.port, rid: h.router_id, ip: pkt.src });
+                    if let Some(lsa) = self.originate_lsa(dev) {
+                        let mut all: Vec<RouterLsa> = self.devices[dev].ospf_lsdb.values().cloned().collect();
+                        all.sort_by_key(|l| u32::from(l.router_id));
+                        self.flood(dev, vec![lsa], None);
+                        if let Some((ip, _)) = self.devices[dev].ifaces[at.port].addr {
+                            self.send_ospf(dev, at.port, ip, OspfMessage::Update { router_id: own, lsas: all }.encode());
+                        }
+                    }
+                }
+                if new_heard {
+                    self.send_ospf_hello(dev, at.port);
+                }
+            }
+            OspfMessage::Update { lsas, .. } => {
+                let mut fresh = Vec::new();
+                for lsa in lsas {
+                    if lsa.router_id == own {
+                        continue;
+                    }
+                    let newer = self.devices[dev].ospf_lsdb.get(&lsa.router_id).map_or(true, |old| lsa.seq > old.seq);
+                    if newer {
+                        self.devices[dev].ospf_lsdb.insert(lsa.router_id, lsa.clone());
+                        fresh.push(lsa);
+                    }
+                }
+                if !fresh.is_empty() {
+                    self.flood(dev, fresh, Some(at.port));
+                }
+            }
+        }
+    }
+
+    /// Dijkstra de custo unitário (BFS) a partir do roteador; instala as redes remotas.
+    fn ospf_spf(&mut self, dev: usize) {
+        let Some(me) = self.ospf_router_id(dev) else { return };
+        let mut first_hop: HashMap<Ipv4Addr, (Ipv4Addr, usize, Ipv4Addr)> = HashMap::new(); // rid -> (vizinho, porta, ip)
+        let mut dist: HashMap<Ipv4Addr, u32> = HashMap::new();
+        dist.insert(me, 0);
+        let mut queue = std::collections::VecDeque::new();
+        for adj in &self.devices[dev].ospf_adjacencies {
+            dist.insert(adj.rid, 1);
+            first_hop.insert(adj.rid, (adj.rid, adj.port, adj.ip));
+            queue.push_back(adj.rid);
+        }
+        while let Some(x) = queue.pop_front() {
+            let Some(lsa) = self.devices[dev].ospf_lsdb.get(&x).cloned() else { continue };
+            let fh = first_hop[&x];
+            for l in lsa.links.iter().filter(|l| l.kind == ospf::LINK_POINT_TO_POINT) {
+                if !dist.contains_key(&l.id) {
+                    dist.insert(l.id, dist[&x] + 1);
+                    first_hop.insert(l.id, fh);
+                    queue.push_back(l.id);
+                }
+            }
+        }
+        let connected: Vec<(u32, u8)> = self.devices[dev]
+            .ifaces
+            .iter()
+            .filter_map(|f| f.addr.filter(|_| f.up).map(|(a, p)| (u32::from(a) & netmask(p), p)))
+            .collect();
+        let mut best: HashMap<(u32, u8), (u8, Ipv4Addr)> = HashMap::new();
+        for (rid, d) in &dist {
+            if *rid == me {
+                continue;
+            }
+            let Some((_, _, nh_ip)) = first_hop.get(rid) else { continue };
+            let Some(lsa) = self.devices[dev].ospf_lsdb.get(rid) else { continue };
+            for l in lsa.links.iter().filter(|l| l.kind == ospf::LINK_STUB) {
+                let net = u32::from(l.id);
+                let prefix = u32::from(l.data).leading_ones() as u8;
+                if connected.contains(&(net, prefix)) {
+                    continue;
+                }
+                let metric = (*d as u8).saturating_add(l.metric as u8);
+                let entry = best.entry((net, prefix)).or_insert((metric, *nh_ip));
+                if metric < entry.0 {
+                    *entry = (metric, *nh_ip);
+                }
+            }
+        }
+        let mut routes: Vec<RipRoute> = best
+            .into_iter()
+            .map(|((net, prefix), (metric, nh))| RipRoute { net, prefix, metric, via: Some(nh) })
+            .collect();
+        routes.sort_by_key(|r| (r.net, r.prefix));
+        self.devices[dev].ospf_routes = routes;
+    }
+
+    /// Converge o OSPF (Hellos, adjacências, flooding) e calcula o SPF de cada roteador.
+    fn converge_ospf(&mut self) {
+        if !self.devices.iter().any(|d| d.ospf) {
+            return;
+        }
+        for dev in 0..self.devices.len() {
+            if !self.devices[dev].ospf {
+                continue;
+            }
+            for port in 0..self.devices[dev].ifaces.len() {
+                if self.devices[dev].ifaces[port].addr.is_some() {
+                    self.send_ospf_hello(dev, port);
+                }
+            }
+        }
+        let mut processed = 0u64;
+        while let Some(p) = self.queue.pop() {
+            processed += 1;
+            if processed > MAX_EVENTS {
+                break;
+            }
+            self.now = p.at;
+            self.deliver(p.to, p.bytes);
+        }
+        for dev in 0..self.devices.len() {
+            if self.devices[dev].ospf {
+                self.ospf_spf(dev);
+            }
+        }
+        let mut log = std::mem::take(&mut self.log);
+        self.rip_log.append(&mut log);
+        self.now = 0;
+    }
+}
+
 /// Decodifica um quadro por camada. Retorna `None` se nem o Ethernet é válido.
 pub fn frame_info(bytes: &[u8]) -> Option<FrameInfo> {
     let frame = Frame::decode(bytes).ok()?;
@@ -1971,6 +2245,7 @@ mod tests {
             dns_records: Vec::new(),
             tcp_listen: Vec::new(),
             rip: false,
+            ospf: false,
         }
     }
 
@@ -1993,6 +2268,7 @@ mod tests {
             dns_records: Vec::new(),
             tcp_listen: Vec::new(),
             rip: false,
+            ospf: false,
         }
     }
 
@@ -2575,5 +2851,47 @@ mod tests {
         let out = run_ping(&rip_chain(false), "a", "10.0.2.10", 1).unwrap();
         assert!(out.replies.is_empty());
         assert!(out.error.is_some());
+    }
+
+    /// PC A - R1 - R2 - PC B; R1 sempre com OSPF; R2 com OSPF conforme o argumento.
+    fn ospf_chain(r2_ospf: bool) -> Topology {
+        let mut a = host("a", "10.0.1.10", 24, None);
+        a.gateway = Some("10.0.1.1".into());
+        let mut b = host("b", "10.0.2.10", 24, None);
+        b.gateway = Some("10.0.2.1".into());
+        let mut r1 = router("r1", vec![port("p1", Some("10.0.1.1"), Some(24)), port("p2", Some("10.0.9.1"), Some(24))], vec![]);
+        let mut r2 = router("r2", vec![port("p1", Some("10.0.9.2"), Some(24)), port("p2", Some("10.0.2.1"), Some(24))], vec![]);
+        r1.ospf = true;
+        r2.ospf = r2_ospf;
+        topo(
+            vec![a, b, r1, r2],
+            vec![
+                link("l1", ("a", "p1"), ("r1", "p1")),
+                link("l2", ("r1", "p2"), ("r2", "p1")),
+                link("l3", ("r2", "p2"), ("b", "p1")),
+            ],
+        )
+    }
+
+    #[test]
+    fn ospf_builds_adjacency_and_spf_route_with_cost_two() {
+        let tables = ospf_tables(&ospf_chain(true)).unwrap();
+        let e = tables.entries.iter().find(|e| e.device_id == "r1" && e.network == "10.0.2.0").expect("r1 calcula 10.0.2.0/24");
+        assert_eq!(e.prefix_len, 24);
+        assert_eq!(e.metric, 2);
+        assert_eq!(e.next_hop, "10.0.9.2");
+    }
+
+    #[test]
+    fn ping_crosses_routers_using_only_ospf_routes() {
+        let out = run_ping(&ospf_chain(true), "a", "10.0.2.10", 1).unwrap();
+        assert!(out.error.is_none(), "{:?}", out.error);
+        assert_eq!(out.replies.len(), 1);
+    }
+
+    #[test]
+    fn without_ospf_on_the_far_router_there_is_no_route() {
+        let out = run_ping(&ospf_chain(false), "a", "10.0.2.10", 1).unwrap();
+        assert!(out.replies.is_empty());
     }
 }
