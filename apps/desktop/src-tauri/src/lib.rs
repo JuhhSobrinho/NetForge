@@ -1,6 +1,7 @@
 mod project_io;
 
 use netforge_engine::cli::{self, CliOutcome, CliSession};
+use netforge_engine::labs::{self, LabSpec, LabSummary, ObjectiveResult};
 use netforge_engine::sim::{self, DeviceTables, PingOutcome};
 use netforge_engine::topology::Topology;
 use serde::Serialize;
@@ -65,6 +66,25 @@ fn cli_execute(
     cli::execute(&topology, &device_id, session, &line, runtime.as_deref())
 }
 
+/// Lista os laboratórios prontos.
+#[tauri::command]
+fn list_labs() -> Vec<LabSummary> {
+    labs::list_labs()
+}
+
+/// Devolve um laboratório (topologia inicial, enunciado e objetivos).
+#[tauri::command]
+fn get_lab(id: String) -> Result<LabSpec, String> {
+    labs::get_lab(&id).ok_or_else(|| "laboratório inexistente".to_string())
+}
+
+/// Verifica os objetivos de um laboratório contra a topologia atual do aluno.
+#[tauri::command]
+fn check_lab(topology: Topology, lab_id: String) -> Result<Vec<ObjectiveResult>, String> {
+    let lab = labs::get_lab(&lab_id).ok_or_else(|| "laboratório inexistente".to_string())?;
+    Ok(labs::check_lab(&topology, &lab.objectives))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
   tauri::Builder::default()
@@ -75,7 +95,10 @@ pub fn run() {
         open_project_file,
         run_ping,
         export_pcap,
-        cli_execute
+        cli_execute,
+        list_labs,
+        get_lab,
+        check_lab
     ])
     .setup(|app| {
       if cfg!(debug_assertions) {

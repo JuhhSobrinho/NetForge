@@ -108,3 +108,6 @@ Propósito: explicar, nunca inventar. Só responde com base no estado real do si
 | Temas, painéis e atalhos | Alta | Fase 2+ |
 
 Ver a análise de cada ideia em [COMPETITOR_ANALYSIS.md](COMPETITOR_ANALYSIS.md#diferenciais).
+
+
+**Estado (Fase 7):** laboratórios prontos implementados (isolamento por VLAN, primeira comunicação, duas redes com roteador). Verificação dos objetivos usa ping no motor. Ainda não: criação de laboratórios pelo usuário e exportação.

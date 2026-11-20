@@ -24,6 +24,7 @@ import {
 } from './topology/model'
 import { createStressTopology } from './topology/stress'
 import { PingPanel } from './ping/PingPanel'
+import { LabsPanel } from './labs/LabsPanel'
 import type { DeviceTables } from './cli/engine'
 import type { ActiveLink } from './ping/engine'
 import { DeviceTerminal } from './cli/DeviceTerminal'
@@ -248,6 +249,7 @@ export default function App() {
               </p>
             </>
           )}
+          <LabsPanel topology={topology} onLoad={(t) => apply(() => t)} />
           <PingPanel topology={topology} onRuntime={setRuntime} onActiveLink={setActiveLink} />
         </aside>
       </div>

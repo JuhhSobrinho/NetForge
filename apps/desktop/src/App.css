@@ -382,3 +382,12 @@ button.danger {
 .diagnostics__item--warning { border-color: #b7791f; }
 .diagnostics__item--info { border-color: var(--ok); }
 .diagnostics__hint { display: block; color: var(--muted); margin-top: 2px; }
+
+/* Laboratórios (Fase 7) */
+.labs { margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--border); }
+.labs__statement { font-size: 12px; margin: 8px 0; line-height: 1.4; }
+.labs__hint { font-size: 11px; margin: 4px 0; }
+.labs__results { list-style: none; padding: 0; margin: 8px 0 0; display: grid; gap: 6px; font-size: 12px; }
+.labs__results li { display: grid; gap: 2px; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--border); }
+.labs__ok { border-color: var(--ok); }
+.labs__fail { border-color: var(--danger); }
